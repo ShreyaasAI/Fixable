@@ -1,0 +1,2 @@
+target_test: "tests/test_dates.py::test_month_and_day_order"
+description: "`parse_iso('2024-03-07')` returns 3 July instead of 7 March."

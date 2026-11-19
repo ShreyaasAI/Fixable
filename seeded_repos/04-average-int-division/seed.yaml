@@ -1,0 +1,2 @@
+target_test: "tests/test_stats.py::test_fractional_average"
+description: "`average([1, 2])` returns 1 instead of 1.5."

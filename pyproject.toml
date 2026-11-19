@@ -1,0 +1,49 @@
+[project]
+name = "swf"
+version = "0.0.1"
+description = "Web coding agent harness built on mini-swe-agent (MVP)"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=50.0.2",
+    "fastapi>=0.165.0",
+    "httpx>=0.28.1",
+    "psycopg-pool>=3.3.3",
+    "psycopg[binary]>=3.3.9",
+    "pydantic>=2.7",
+    "pyjwt[crypto]>=2.15.1",
+    "pyyaml>=6.0",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-PyYAML>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swf"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["seeded_repos", ".venv"]
+addopts = "-q -rs"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["seeded_repos"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src"]

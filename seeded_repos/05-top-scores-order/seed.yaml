@@ -1,0 +1,2 @@
+target_test: "tests/test_scores.py::test_top_two"
+description: "`top_scores(scores, 2)` should return the two highest scores, highest first."

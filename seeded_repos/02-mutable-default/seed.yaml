@@ -1,0 +1,2 @@
+target_test: "tests/test_tags.py::test_default_list_is_fresh"
+description: "Calling `add_tag` without a list keeps tags from previous calls."

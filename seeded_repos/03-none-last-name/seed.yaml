@@ -1,0 +1,2 @@
+target_test: "tests/test_names.py::test_first_name_only"
+description: "`full_name('Ada')` raises TypeError; it should return 'Ada'."

@@ -1,0 +1,2 @@
+target_test: "tests/test_emails.py::test_plus_address_valid"
+description: "`is_valid_email('ann+news@example.com')` returns False; plus-addressing is valid."

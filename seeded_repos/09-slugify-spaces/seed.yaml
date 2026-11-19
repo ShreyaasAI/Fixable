@@ -1,0 +1,2 @@
+target_test: "tests/test_slugs.py::test_spaces_and_case"
+description: "`slugify('Hello   World')` should be 'hello-world'."

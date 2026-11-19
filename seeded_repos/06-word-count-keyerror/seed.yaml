@@ -1,0 +1,2 @@
+target_test: "tests/test_words.py::test_counts_repeated_words"
+description: "`word_count('a b a')` raises KeyError instead of counting words."
