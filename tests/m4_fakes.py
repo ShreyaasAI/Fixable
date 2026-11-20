@@ -30,7 +30,7 @@ from minisweagent.models.utils.actions_toolcall import format_toolcall_observati
 from swf import states, store
 from swf.agent.channel import ApprovalOutcome
 from swf.agent.tools import ToolError
-from swf.agent.web_agent import WebAgent
+from swf.agent.web_agent import AcceptAllEvidence, WebAgent
 from swf.db import Database
 from swf.preflight import PreflightResult
 
@@ -502,7 +502,7 @@ def make_agent(
         *,
         bash: BashScript | None = None,
         channel: FakeChannel | None = None,
-        evidence: Any = None,
+        evidence: Any = AcceptAllEvidence(),  # noqa: B008 - explicit M4 opt-out (m5 §0.6)
         cost: float = 0.0,
         **cfg: Any,
     ) -> tuple[WebAgent, ScriptedModel, FakeEnv, FakeChannel]:
@@ -519,7 +519,7 @@ def make_agent(
             "outputs_dir": tmp_path / "outputs",
         }
         config.update(cfg)
-        extra: dict[str, Any] = {} if evidence is None else {"evidence": evidence}
+        extra: dict[str, Any] = {"evidence": evidence}
         agent = WebAgent(
             model,
             env,
