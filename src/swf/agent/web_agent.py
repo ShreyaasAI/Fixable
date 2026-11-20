@@ -97,6 +97,10 @@ class EvidenceHarness(EvidenceGate, Protocol):
 
     def status_text(self) -> str: ...
 
+    def readonly_diff(self) -> tuple[str, bool]:
+        """Head of the diff vs the start copy, and whether it was cut (A1 approval payload)."""
+        ...
+
     def rebaseline(self, approval_id: Any = None) -> None:
         """The user accepted an investigate-phase change: new baseline and start snapshot."""
         ...
@@ -590,12 +594,8 @@ class WebAgent(DefaultAgent):
         if not any(report.get("counts", {}).values()):
             return
         self.channel.emit("backstop_violation", report)
-        payload: dict[str, Any] = dict(report)
-        readonly_diff = getattr(harness, "readonly_diff", None)
-        if callable(readonly_diff):
-            diff, truncated = readonly_diff()
-            payload["diff"] = diff
-            payload["diff_truncated"] = truncated
+        diff, truncated = harness.readonly_diff()
+        payload: dict[str, Any] = {**report, "diff": diff, "diff_truncated": truncated}
         self._transition("awaiting_command_approval")
         approval_id = self.channel.request_approval("readonly_violation", payload)
         outcome = self._wait_approval(approval_id)

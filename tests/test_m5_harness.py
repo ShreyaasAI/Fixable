@@ -22,6 +22,8 @@ from m5_fakes import (
     scripted_bash,
     write_command,
 )
+
+from swf.agent.channel import BaselineNotReproduced, NoTestCommand
 from swf.evidence import (
     HARNESS_PREAMBLE,
     HARNESS_TEST_TIMEOUT_SECONDS,
@@ -30,8 +32,6 @@ from swf.evidence import (
     TaskHarness,
     take_snapshot,
 )
-
-from swf.agent.channel import BaselineNotReproduced, NoTestCommand
 
 OK = {"output": "", "returncode": 0, "exception_info": ""}
 

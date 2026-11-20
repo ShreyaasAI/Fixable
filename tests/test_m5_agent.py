@@ -35,10 +35,11 @@ from m5_fakes import (
     pager_bash,
     write_command,
 )
-from swf.evidence import REFUSAL_PREFIX
 
+from swf import states
 from swf.agent.channel import ApprovalOutcome
 from swf.agent.web_agent import AcceptAllEvidence, EvidenceHarness, RefuseAllEvidence, WebAgent
+from swf.evidence import REFUSAL_PREFIX
 
 pytest_plugins = ["m4_fakes", "m5_fakes"]
 
@@ -357,7 +358,8 @@ def test_approving_the_change_rebaselines_and_excludes_it_from_the_final_diff(
         True,
     ]
     assert harness.start_digest != start_before
-    assert len(channel.events_of("backstop_rebaseline")) == 1
+    (rebase,) = channel.events_of("backstop_rebaseline")
+    assert rebase["approval_id"] == str(list(channel.approvals)[1])
     diff = sink.of("diff")[0].output
     assert diff is not None
     assert "pager.py" in diff
@@ -413,6 +415,51 @@ def test_an_unanswered_approval_expires_after_24_hours(
     assert channel.expired_approvals == [readonly_id]
     assert fake_clock.now - started >= 86400
     assert "plan" not in kinds_requested(channel)
+
+
+class OrderedChannel(FakeChannel):
+    """Records the status each approval was requested under; can end the task mid-transition."""
+
+    def __init__(self, *, finish_on_awaiting: int | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.status_at_request: list[tuple[str, str]] = []
+        self._awaiting = 0
+        self._finish_on = finish_on_awaiting
+
+    def transition(self, to_status: str, **kwargs: Any) -> None:
+        if to_status == "awaiting_command_approval":
+            self._awaiting += 1
+            if self._awaiting == self._finish_on:
+                raise states.TaskFinished("task finished")
+        super().transition(to_status, **kwargs)
+
+    def request_approval(self, kind: str, payload: dict[str, Any]) -> Any:
+        self.status_at_request.append((kind, self.status()))
+        return super().request_approval(kind, payload)
+
+
+def test_the_awaiting_status_is_set_before_the_readonly_approval_row_exists(
+    make_harness_agent: MakeHarnessAgent,
+) -> None:
+    channel = OrderedChannel(decide=deciding("rejected"))
+    agent, *_ = make_harness_agent(write_steps(), channel=channel)
+    run_agent(agent)
+    assert channel.status_at_request == [
+        ("command", "awaiting_command_approval"),
+        ("readonly_violation", "awaiting_command_approval"),
+    ]
+
+
+def test_a_finished_task_gets_no_readonly_approval_row(
+    make_harness_agent: MakeHarnessAgent,
+) -> None:
+    # 1st awaiting transition = the python -c command; the 2nd = the readonly_violation one
+    channel = OrderedChannel(finish_on_awaiting=2, decide=deciding("approved"))
+    agent, *_ = make_harness_agent(write_steps(), channel=channel)
+    result = run_agent(agent)
+    assert result["exit_status"] == "Stopped"
+    assert kinds_requested(channel) == ["command"]
+    assert channel.events_of("backstop_rebaseline") == []
 
 
 def test_a_clean_investigate_asks_only_for_the_plan(make_harness_agent: MakeHarnessAgent) -> None:

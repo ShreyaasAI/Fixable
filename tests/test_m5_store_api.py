@@ -14,10 +14,10 @@ from fastapi.testclient import TestClient
 from helpers import FakeUser
 from m4_fakes import make_db_user, queued_task
 from m5_fakes import evidence_rows
-from swf.evidence import EvidenceRecord, PgEvidenceSink
 
 from swf import store
 from swf.db import Database
+from swf.evidence import EvidenceRecord, PgEvidenceSink
 
 pytest_plugins = ["m4_fakes", "m5_fakes"]
 

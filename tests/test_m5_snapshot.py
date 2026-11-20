@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
 from swf.evidence import (
     SNAPSHOT_IGNORE_DIRS,
     Snapshot,

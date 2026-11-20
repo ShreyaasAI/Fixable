@@ -732,10 +732,10 @@ class TaskHarness:
             raise RuntimeError("check_readonly before take_start_snapshot")
         return diff_snapshots(self._start, take_snapshot(self.repo)).as_payload()
 
-    def readonly_diff(self, limit: int = _READONLY_DIFF_LIMIT) -> tuple[str, bool]:
+    def readonly_diff(self) -> tuple[str, bool]:
         """Head of the diff from the start copy to the workspace, and whether it was cut."""
         text = unified_diff(self.baseline_dir, self.repo)
-        return text[:limit], len(text) > limit
+        return text[:_READONLY_DIFF_LIMIT], len(text) > _READONLY_DIFF_LIMIT
 
     def rebaseline(self, approval_id: Any = None) -> None:
         """The user accepted an investigate-phase change: it becomes part of the base (A1)."""

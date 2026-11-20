@@ -1,8 +1,8 @@
 # Web Coding Agent — Implementation Plan
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
-- **Last updated:** 2026-11-20
-- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20)
+- **Last updated:** 2026-11-21
+- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 implemented, awaiting user review (2026-11-21)
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
 Labels: **[D]** confirmed decision · **[A]** assumption · **[Q]** open question. Nothing here goes beyond the approved spec; roadmap items are listed only as non-goals.
@@ -236,9 +236,20 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - Deferred: `record_evidence` stub + accept-all `EvidenceGate` → M5; production `WorkspaceProvider` (clone) → M6 (`swf.worker.main` needs `SWF_LOCAL_SOURCE` until then). Known: importing `swf.sandbox` loads litellm (~8 s).
 
 ### M5 — Evidence + harness re-run + backstop
-- [ ] Tests: `complete_task` refused without the bundle; harness mismatch → failed; backstop catches a write in investigate
-- [ ] Test runs set `PYTHONDONTWRITEBYTECODE=1` (or clear caches): in M0 a same-size edit within the same second reused a stale `.pyc` and produced a false failure
-- **DoD:** tests green on 2 seeded repos end-to-end (fake model).
+- [x] Tests: `complete_task` refused without the bundle; harness mismatch → failed; backstop catches a write in investigate
+- [x] Test runs set `PYTHONDONTWRITEBYTECODE=1` (or clear caches): in M0 a same-size edit within the same second reused a stale `.pyc` and produced a false failure
+- **DoD:** tests green on 2 seeded repos end-to-end (fake model). **Status 2026-11-21: implemented, awaiting user review.** Evidence: see M5 close-out.
+- Contract: `docs/software-factory/m5-contract.md` (§12 amendments override §0–§8).
+- Decisions [D, user 2026-11-20]:
+  - The harness runs the baseline (target + full suite) at the end of `preparing`; a passing baseline fails the task (`baseline_not_reproduced`).
+  - Backstop: a write in investigate asks for approval (`readonly_violation`) before plan approval. Rejected → `failed("readonly_violation")`. Approved → rebaseline (new baseline rows and start snapshot), then the normal plan path. Timeout (24 h) → `failed("approval_timeout")`.
+  - Post/suite evidence comes only from the agent's real `run_tests` results in execute/verify, pinned to a workspace digest. No `failing_test` → the whole suite is the target.
+  - Secure gate: completion is refused unless a harness (or an explicit `AcceptAllEvidence`) is wired. M4 tests opt out explicitly.
+  - Diff = host-side copy at investigate start + `difflib` (M5 workspaces are not git repos).
+- Files: new `src/swf/evidence.py` (snapshots, difflib diffs, pytest failure parsing, `harness_command`, `TaskHarness`); modified `src/swf/{store,worker}.py`, `src/swf/agent/{__init__,channel,prompts,web_agent}.py`, `src/swf/api/app.py` (`GET /v1/tasks/{id}/evidence`); migration `supabase/migrations/20261122000000_m5_evidence.sql` (`baseline_suite`/`post` kinds, `readonly_violation` approval kind); tests `tests/m5_fakes.py`, `tests/test_m5_{agent,e2e,harness,rules,snapshot,store_api,worker}.py`; M4 tests opted out of the gate (`tests/m4_fakes.py`, `tests/test_m4_worker.py`, `tests/test_m4_live_smoke.py`).
+- Exits added: `ReadOnlyViolation`, `BaselineNotReproduced`, `NoTestCommand`.
+- Fixes: approval row is created only after the `awaiting_*` transition (fixes an M4 flake); the post suite run passes when only baseline failures remain and the target is not among them.
+- Deferred: production `WorkspaceProvider` (clone) and PR → M6.
 
 ### M6 — GitHub clone, clean-clone apply, PR
 - [ ] Tests: hooks never run (planted hook fixture); branch fixed server-side; no token in the workspace; PR created on a test repo (marked live test)

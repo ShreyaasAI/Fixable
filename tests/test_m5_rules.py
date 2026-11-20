@@ -8,6 +8,9 @@ import shlex
 import pytest
 from m4_fakes import FAILING_TEST, TEST_COMMAND
 from m5_fakes import OTHER_FAILURE, fake_pytest_output
+
+from swf.agent.channel import NoTestCommand
+from swf.agent.tools import ToolError
 from swf.evidence import (
     HARNESS_PREAMBLE,
     BundleProblem,
@@ -17,9 +20,6 @@ from swf.evidence import (
     harness_command,
     parse_failures,
 )
-
-from swf.agent.channel import NoTestCommand
-from swf.agent.tools import ToolError
 
 CURRENT = "c" * 64
 START = "5" * 64
@@ -214,6 +214,26 @@ def test_post_failing() -> None:
     assert codes(problems(runs=[SUITE, failing])) == ["post_failing"]
 
 
+def test_a_failing_run_with_only_baseline_failures_and_not_the_target_passes() -> None:
+    legacy_only = rec("suite", exit_code=1, failures=frozenset({OTHER_FAILURE}))
+    assert problems(runs=[POST, legacy_only]) == []
+
+
+def test_a_failing_covering_run_with_a_new_failure_is_post_failing() -> None:
+    new = rec("suite", exit_code=1, failures=frozenset({OTHER_FAILURE, "tests/t.py::new"}))
+    assert "post_failing" in codes(problems(runs=[POST, new]))
+
+
+def test_a_failing_covering_run_that_still_fails_the_target_param_id_is_post_failing() -> None:
+    param = rec("suite", exit_code=1, failures=frozenset({FAILING_TEST + "[a-b]"}))
+    assert "post_failing" in codes(problems(runs=[POST, param]))
+
+
+def test_a_nonzero_covering_run_with_unparsed_output_is_post_failing() -> None:
+    unparsed = rec("post", exit_code=1, selector=FAILING_TEST)
+    assert codes(problems(runs=[SUITE, unparsed])) == ["post_failing"]
+
+
 def test_suite_missing() -> None:
     assert codes(problems(runs=[POST])) == ["suite_missing"]
 
@@ -293,10 +313,18 @@ def test_without_a_failing_test_the_whole_suite_is_the_target() -> None:
                  source="harness")  # fmt: skip
     passing = rec("suite", exit_code=0)
     assert problems(baseline=shared, baseline_suite=shared, runs=[passing]) == []
-    failing = rec("suite", exit_code=1, failures=frozenset({OTHER_FAILURE}))
-    assert codes(problems(baseline=shared, baseline_suite=shared, runs=[failing])) == [
-        "post_failing"
+    # new rule: a run that fails only with baseline failures passes (no target to hit)
+    legacy_only = rec("suite", exit_code=1, failures=frozenset({OTHER_FAILURE}))
+    assert problems(baseline=shared, baseline_suite=shared, runs=[legacy_only]) == []
+    new_failure = rec("suite", exit_code=1, failures=frozenset({OTHER_FAILURE, "tests/t.py::new"}))
+    assert codes(problems(baseline=shared, baseline_suite=shared, runs=[new_failure])) == [
+        "post_failing",
+        "suite_new_failures",
     ]
+    unparsed = rec("suite", exit_code=1)
+    assert "post_failing" in codes(
+        problems(baseline=shared, baseline_suite=shared, runs=[unparsed])
+    )
     assert codes(problems(baseline=shared, baseline_suite=shared, runs=[])) == [
         "post_missing",
         "suite_missing",

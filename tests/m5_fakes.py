@@ -35,11 +35,11 @@ from m4_fakes import (
     call,
     task_owner,
 )
-from swf.evidence import EvidenceRecord, TaskHarness
 
 from swf import store
 from swf.agent.web_agent import WebAgent
 from swf.db import Database
+from swf.evidence import EvidenceRecord, TaskHarness
 
 ROOT = Path(__file__).resolve().parent.parent
 SEEDS = ROOT / "seeded_repos"
