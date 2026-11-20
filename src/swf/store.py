@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -62,7 +62,7 @@ ACTIVE_STATUSES = (
 _DEFAULT_RESERVATION_MB = 4096
 _DEFAULT_RESERVATION_CPU = 1.0
 
-ApprovalKind = Literal["plan", "command", "guard_flag"]
+ApprovalKind = Literal["plan", "command", "guard_flag", "readonly_violation"]
 Decision = Literal["approve", "reject"]
 
 
@@ -136,6 +136,25 @@ class Event(BaseModel):
     seq: int
     type: str
     payload: dict[str, Any]
+    created_at: datetime
+
+
+class EvidenceRow(BaseModel):
+    id: int
+    task_id: uuid.UUID
+    kind: str
+    source: str
+    command: str | None
+    selector: str | None
+    exit_code: int | None
+    output: str | None
+    output_truncated: bool
+    output_ref: str | None
+    failures: list[str]
+    duration_ms: int | None
+    workspace_digest: str | None
+    tool_call_id: str | None
+    details: dict[str, Any]
     created_at: datetime
 
 
@@ -492,6 +511,85 @@ def list_events(
         [task_id, user_id, after_seq, limit],
     ).fetchall()
     return [Event.model_validate(r) for r in rows]
+
+
+# --- evidence (M5) -------------------------------------------------------------------------
+
+_EVIDENCE_COLUMNS = (
+    "id, task_id, kind, source, command, selector, exit_code, output, output_truncated,"
+    " output_ref, failures, duration_ms, workspace_digest, tool_call_id, details, created_at"
+)
+
+
+def add_evidence(
+    conn: Conn,
+    task_id: uuid.UUID,
+    *,
+    kind: str,
+    source: str = "harness",
+    command: str | None = None,
+    selector: str | None = None,
+    exit_code: int | None = None,
+    output: str | None = None,
+    output_truncated: bool = False,
+    output_ref: str | None = None,
+    failures: Sequence[str] = (),
+    duration_ms: int | None = None,
+    workspace_digest: str | None = None,
+    tool_call_id: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> EvidenceRow:
+    """Worker side (M5): one harness-recorded evidence row plus its `evidence_recorded` event."""
+    row = conn.execute(
+        "insert into public.evidence (task_id, kind, source, command, selector, exit_code,"
+        " output, output_truncated, output_ref, failures, duration_ms, workspace_digest,"
+        " tool_call_id, details) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        f" returning {_EVIDENCE_COLUMNS}",
+        [
+            task_id,
+            kind,
+            source,
+            command,
+            selector,
+            exit_code,
+            output,
+            output_truncated,
+            output_ref,
+            Jsonb(sorted(failures)),
+            duration_ms,
+            workspace_digest,
+            tool_call_id,
+            _jsonb(details or {}),
+        ],
+    ).fetchone()
+    assert row is not None
+    evidence = EvidenceRow.model_validate(row)
+    append_event(
+        conn,
+        task_id,
+        "evidence_recorded",
+        {
+            "evidence_id": evidence.id,
+            "kind": kind,
+            "source": source,
+            "exit_code": exit_code,
+            "selector": selector,
+            "workspace_digest": workspace_digest,
+        },
+    )
+    return evidence
+
+
+def list_evidence(conn: Conn, user_id: uuid.UUID, task_id: uuid.UUID) -> list[EvidenceRow]:
+    """Evidence rows of the caller's task, oldest first (as_user)."""
+    columns = ", ".join(f"v.{c.strip()}" for c in _EVIDENCE_COLUMNS.split(","))
+    rows = conn.execute(
+        f"select {columns} from public.evidence v"
+        " join public.tasks t on t.id = v.task_id"
+        " where v.task_id = %s and t.user_id = %s order by v.id",
+        [task_id, user_id],
+    ).fetchall()
+    return [EvidenceRow.model_validate(r) for r in rows]
 
 
 # --- worker side (backend) ----------------------------------------------------------------

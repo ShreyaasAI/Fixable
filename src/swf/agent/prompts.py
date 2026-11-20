@@ -21,9 +21,13 @@ cause, call submit_plan with a concise plan. Then wait: the user approves or rej
 edit_file or write_file (or shell commands). Do not modify tests unless the plan says so. Then \
 call run_tests. A passing run_tests after your changes moves the task to the verify phase \
 automatically; edit_file and write_file are then no longer available.
-3. verify: re-run the checks you need (the failing test and the full suite), record the \
-evidence with record_evidence, then call complete_task with a summary of the change and the \
-evidence.
+3. verify: the harness already ran the failing test and the full suite before you started \
+(the baseline), and it records evidence only from your own run_tests results, never from your \
+text. Before complete_task, after your last change, run the failing test with run_tests (it \
+must pass) and run_tests with no selector (the full suite: no new failures compared with the \
+baseline). Any later change makes those runs stale. record_evidence shows what is still \
+missing. Then call complete_task with a summary of the change and the evidence; it is refused \
+while the evidence is incomplete.
 
 Rules:
 - Never guess. Read the code before you change it, and base every claim on tool output.
@@ -32,6 +36,8 @@ refused, use another way. Do not try to work around the policy or the sandbox.
 - Keep changes minimal and focused on the failing test. Match the existing code style.
 - Use ask_user only when you are blocked on information only the user has.
 - If a plan is rejected, read the user's comment, investigate further and submit a new plan.
+- Any change to the repository in the investigate phase is shown to the user for approval \
+when you call submit_plan; if the user rejects it, the task fails.
 """
 
 INSTANCE_TEMPLATE = """\

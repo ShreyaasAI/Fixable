@@ -1,9 +1,12 @@
-"""The coding agent (M4): tools, per-phase model, task channel and `WebAgent`."""
+"""The coding agent (M4, M5 evidence hooks): tools, per-phase model, task channel and `WebAgent`."""
 
 from swf.agent.channel import (
     AgentExit,
     ApprovalOutcome,
+    BaselineNotReproduced,
+    NoTestCommand,
     PgTaskChannel,
+    ReadOnlyViolation,
     RetriesExhausted,
     SetupForbidden,
     TaskChannel,
@@ -29,7 +32,14 @@ from swf.agent.tools import (
     run_tool,
     tool_schemas,
 )
-from swf.agent.web_agent import AcceptAllEvidence, EvidenceGate, WebAgent, WebAgentConfig
+from swf.agent.web_agent import (
+    AcceptAllEvidence,
+    EvidenceGate,
+    EvidenceHarness,
+    RefuseAllEvidence,
+    WebAgent,
+    WebAgentConfig,
+)
 
 __all__ = [
     "DEFAULT_PHASE_MODELS",
@@ -39,12 +49,17 @@ __all__ = [
     "AgentExit",
     "AgentModel",
     "ApprovalOutcome",
+    "BaselineNotReproduced",
     "EvidenceGate",
+    "EvidenceHarness",
     "MissingApiKey",
+    "NoTestCommand",
     "PgTaskChannel",
     "PhaseModel",
     "PhaseModelConfig",
     "Plan",
+    "ReadOnlyViolation",
+    "RefuseAllEvidence",
     "RetriesExhausted",
     "SetupForbidden",
     "TaskChannel",

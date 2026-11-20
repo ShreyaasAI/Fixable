@@ -5,6 +5,10 @@ lock (`store.claim_next_task`), holds a lease on each running task and renews it
 separate heartbeat thread, and reaps tasks whose lease expired (another worker died). A runner
 whose lease was lost stops without writing a status: the reaper's `interrupted` stands.
 
+M5 (m5-contract §6): unless `RunnerDeps.evidence` opts out, each task gets a `TaskHarness`:
+the baseline runs at the end of `preparing` (retryable), the start snapshot is taken before
+`investigating`, the harness gates `complete_task`, and `confirming` re-runs the target.
+
 Run: `uv run python -m swf.worker` (needs `SWF_LOCAL_SOURCE` until M6 adds the GitHub clone).
 """
 
@@ -39,9 +43,10 @@ from swf.agent.channel import (
 )
 from swf.agent.model import AgentModel
 from swf.agent.tools import ToolEnv
-from swf.agent.web_agent import AcceptAllEvidence, EvidenceGate, WebAgent, WebAgentConfig
+from swf.agent.web_agent import EvidenceGate, WebAgent, WebAgentConfig
 from swf.config import AgentsFile, AgentsFileError, load_agents_file
 from swf.db import Database
+from swf.evidence import HarnessInfraError, PgEvidenceSink, TaskHarness
 from swf.preflight import Limits
 
 logger = logging.getLogger("swf.worker")
@@ -56,6 +61,9 @@ _EXIT_ERRORS = {
     "RepeatedFormatError": "repeated_format_error",
     "RetriesExhausted": "retries_exhausted",
     "SetupForbidden": "setup_forbidden",
+    "ReadOnlyViolation": "readonly_violation",
+    "BaselineNotReproduced": "baseline_not_reproduced",
+    "NoTestCommand": "no_test_command",
 }
 
 
@@ -141,7 +149,8 @@ class RunnerDeps:
     env_factory: EnvFactory
     model_factory: Callable[[], AgentModel]
     config: WorkerConfig
-    evidence: EvidenceGate = field(default_factory=AcceptAllEvidence)
+    # None -> a `TaskHarness` per task (production); `AcceptAllEvidence()` opts out (M4).
+    evidence: EvidenceGate | None = None
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
 
@@ -200,6 +209,7 @@ class TaskRunner:
         self.env: ToolEnv | None = None
         self.agent: WebAgent | None = None
         self.workspace: TaskWorkspace | None = None
+        self.harness: TaskHarness | None = None
 
     def stop(self) -> None:
         """Lost lease or worker shutdown: stop at the next check, never write a status."""
@@ -262,6 +272,24 @@ class TaskRunner:
             self._with_retries("setup", run_setup)
 
         self._check_stopped()
+        harness: TaskHarness | None = None
+        if deps.evidence is None:
+            harness = TaskHarness(
+                env=env,
+                channel=channel,
+                sink=PgEvidenceSink(deps.db, task.id, is_stopped=lambda: self.stopped),
+                repo=ws.repo,
+                root=ws.root,
+                test_command=test_command,
+                failing_test=task.failing_test,
+                output_limit=self.agent_config.output_limit,
+                clock=deps.clock,
+            )
+            self.harness = harness
+            self._with_retries("baseline", lambda attempt: harness.run_baseline())
+            self._check_stopped()
+            harness.take_start_snapshot()
+        gate: EvidenceGate | None = harness if harness is not None else deps.evidence
         channel.transition("investigating", phase="investigate")
         agent_kwargs: dict[str, Any] = {
             "output_path": ws.root / "trajectory.json",
@@ -275,7 +303,7 @@ class TaskRunner:
             deps.model_factory(),
             env,
             channel=channel,
-            evidence=deps.evidence,
+            evidence=gate,
             clock=deps.clock,
             sleep=deps.sleep,
             **agent_kwargs,
@@ -292,9 +320,41 @@ class TaskRunner:
             return
         if exit_status == "Submitted":
             channel.transition("confirming", phase="confirm")
-            channel.transition("completed")
+            if harness is None:
+                channel.transition("completed")
+                return
+            self._confirm(harness)
             return
         self._fail(_EXIT_ERRORS.get(exit_status, _snake(exit_status) or "unknown_exit"))
+
+    def _confirm(self, harness: TaskHarness) -> None:
+        """m5 §0.5: the harness re-runs the target; infra failures retry, then fail."""
+        cfg = self.agent_config
+        attempts = max(1, cfg.max_retries)
+        for attempt in range(1, attempts + 1):
+            self._check_stopped()
+            try:
+                confirmation = harness.confirm()
+            except HarnessInfraError as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                self.channel.emit(
+                    "retry", {"step": "harness_rerun", "attempt": attempt, "error": error}
+                )
+                if attempt < attempts:
+                    backoff = cfg.retry_backoff_seconds
+                    if backoff:
+                        self.deps.sleep(backoff[min(attempt - 1, len(backoff) - 1)])
+                continue
+            if confirmation.passed:
+                self.channel.transition("completed")
+                return
+            reason = (confirmation.discrepancy or {}).get("reason", "unknown")
+            self._fail(
+                f"harness_mismatch: {reason}; post-fix exit 0, "
+                f"harness re-run exit {confirmation.exit_code}"
+            )
+            return
+        self._fail("harness_rerun_error")
 
     @staticmethod
     def _agents_file(repo: Path) -> AgentsFile | None:

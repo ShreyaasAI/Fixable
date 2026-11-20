@@ -13,7 +13,10 @@ as a `rejected` task (shown to the user, not counted against the quota); admit/q
 table (no LISTEN/NOTIFY), resumes after `Last-Event-ID` (or `?after=`), sends a `: ping`
 comment when idle, and ends once the task is terminal and every event has been sent.
 
-Deferred: evidence (M5), task delete + workspace (M6),
+`GET /v1/tasks/{id}/evidence` (M5) lists the task's evidence rows (as_user + RLS); the full
+outputs stay in the workspace (`output_ref` is relative to it).
+
+Deferred: task delete + workspace (M6),
 quota enforcement / rate limits / kill switch (M8).
 """
 
@@ -139,6 +142,12 @@ class Me(BaseModel):
     is_admin: bool
     github_linked: bool
     usage_today: store.Usage
+
+
+class EvidenceOut(BaseModel):
+    task_id: uuid.UUID
+    status: str
+    items: list[store.EvidenceRow]
 
 
 class RepoOut(BaseModel):
@@ -300,6 +309,15 @@ def create_app(
         if task is None:
             raise store.NotFound
         return task
+
+    @app.get("/v1/tasks/{task_id}/evidence")
+    def evidence(user: User, task_id: uuid.UUID) -> EvidenceOut:
+        with deps.db.as_user(user.principal.claims) as conn:
+            task = store.get_task(conn, user.id, task_id)
+            if task is None:
+                raise store.NotFound
+            items = store.list_evidence(conn, user.id, task_id)
+        return EvidenceOut(task_id=task.id, status=task.status, items=items)
 
     @app.get("/v1/tasks/{task_id}/events")
     def events(

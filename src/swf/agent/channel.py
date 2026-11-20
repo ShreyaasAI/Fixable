@@ -66,6 +66,24 @@ class SetupForbidden(AgentExit):
     exit_status = "SetupForbidden"
 
 
+class ReadOnlyViolation(AgentExit):
+    """The user rejected a change made in the read-only investigate phase (m5 §12 A1)."""
+
+    exit_status = "ReadOnlyViolation"
+
+
+class BaselineNotReproduced(AgentExit):
+    """The harness baseline found the target test already passing (m5 §0.1)."""
+
+    exit_status = "BaselineNotReproduced"
+
+
+class NoTestCommand(AgentExit):
+    """AGENTS.md has no test command, so the harness cannot record evidence (m5 §0.1)."""
+
+    exit_status = "NoTestCommand"
+
+
 # --- channel -------------------------------------------------------------------------------
 
 
@@ -211,9 +229,12 @@ def ask_and_wait(
     back_to: str,
     wait: WaitSettings,
 ) -> str:
-    """Ask, move the task to `awaiting_input`, wait for the answer, move back to `back_to`."""
-    question_id = channel.ask(question, source=source)
+    """Move the task to `awaiting_input`, ask, wait for the answer, move back to `back_to`.
+
+    Status first, so an open question row always implies `awaiting_input` (a concurrent cancel
+    makes the transition raise `TaskFinished` and no row is created)."""
     channel.transition("awaiting_input")
+    question_id = channel.ask(question, source=source)
     answer = wait_for(
         lambda: channel.answer(question_id),
         channel=channel,

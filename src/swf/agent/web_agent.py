@@ -10,6 +10,12 @@ Phases: investigate -> `submit_plan` -> (approved) execute -> edits -> a passing
 that covers the target -> verify (switched by the harness) -> `complete_task`.
 Waits (approvals, questions) poll the channel, are bounded by `approval_timeout_seconds`, and
 do not count toward the wall-time limit.
+
+M5 (m5-contract §4, §12 A1): the evidence gate defaults to `RefuseAllEvidence`. When the gate is
+an `EvidenceHarness` (`swf.evidence.TaskHarness`), every non-infra `run_tests` result is handed
+to `record_run`, each `submit_plan` first runs the read-only backstop (a change made in
+investigate becomes a `readonly_violation` approval: rejected -> `ReadOnlyViolation`, approved
+-> re-baseline), and `record_evidence` returns the harness's bundle status.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ import re
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, Protocol, TypeVar, cast, runtime_checkable
 
 from minisweagent.agents.default import AgentConfig, DefaultAgent
 from minisweagent.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded, TimeExceeded
@@ -28,6 +34,7 @@ from swf import policy, states
 from swf.agent import prompts
 from swf.agent.channel import (
     ApprovalOutcome,
+    ReadOnlyViolation,
     RetriesExhausted,
     SetupForbidden,
     TaskChannel,
@@ -52,6 +59,9 @@ from swf.agent.tools import (
 __all__ = [
     "AcceptAllEvidence",
     "EvidenceGate",
+    "EvidenceHarness",
+    "ReadOnlyViolation",
+    "RefuseAllEvidence",
     "RetriesExhausted",
     "SetupForbidden",
     "TaskStopped",
@@ -66,17 +76,44 @@ _ARGS_EVENT_LIMIT = 2000
 _FILE_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
+@runtime_checkable
 class EvidenceGate(Protocol):
     def check(self, channel: TaskChannel) -> str | None:
         """None = the task may complete; else the refusal text for the observation."""
         ...
 
 
+@runtime_checkable
+class EvidenceHarness(EvidenceGate, Protocol):
+    """A gate that also records evidence and runs the backstop (m5 §4; `TaskHarness`)."""
+
+    def check_readonly(self) -> dict[str, Any]:
+        """`SnapshotDiff.as_payload()` of the workspace vs the start snapshot."""
+        ...
+
+    def record_run(
+        self, *, tool_call_id: str, selector: str | None, output: dict[str, Any], phase: str
+    ) -> None: ...
+
+    def status_text(self) -> str: ...
+
+    def rebaseline(self, approval_id: Any = None) -> None:
+        """The user accepted an investigate-phase change: new baseline and start snapshot."""
+        ...
+
+
 class AcceptAllEvidence:
-    """M4 default: every `complete_task` is accepted (M5 replaces it)."""
+    """Explicit opt-out (M4 behaviour): every `complete_task` is accepted, no harness."""
 
     def check(self, channel: TaskChannel) -> str | None:
         return None
+
+
+class RefuseAllEvidence:
+    """Secure default when no gate is wired: completion is always refused (m5 §0.6)."""
+
+    def check(self, channel: TaskChannel) -> str | None:
+        return "complete_task refused: no evidence harness is configured"
 
 
 class WebAgentConfig(AgentConfig):
@@ -146,7 +183,7 @@ class WebAgent(DefaultAgent):
         self.model: AgentModel = model
         self.env: ToolEnv = env  # type: ignore[assignment]
         self.channel = channel
-        self.evidence: EvidenceGate = evidence if evidence is not None else AcceptAllEvidence()
+        self.evidence: EvidenceGate = evidence if evidence is not None else RefuseAllEvidence()
         self.clock = clock
         self.sleep = sleep
         self.phase = "investigate"
@@ -340,6 +377,10 @@ class WebAgent(DefaultAgent):
         if answer.strip().lower() != "retry":
             raise RetriesExhausted()
 
+    @property
+    def harness(self) -> EvidenceHarness | None:
+        return self.evidence if isinstance(self.evidence, EvidenceHarness) else None
+
     def _finish(
         self,
         tool: str,
@@ -422,11 +463,7 @@ class WebAgent(DefaultAgent):
                 answer = self._ask(args["question"], "agent")
                 out = _result(answer, 0)
             elif tool == "record_evidence":
-                self.channel.emit(
-                    "evidence",
-                    {"kind": args["kind"], "note": args["note"], "command": args.get("command")},
-                )
-                out = _result("recorded", 0)
+                out = self._record_evidence(args)
             elif tool == "complete_task":
                 refusal = self.evidence.check(self.channel)
                 if refusal is None:
@@ -454,11 +491,12 @@ class WebAgent(DefaultAgent):
         if verdict.decision == "forbid":
             return _result("forbidden: " + "; ".join(verdict.reasons), 126)
         if verdict.decision == "approve":
+            # Status first: a pending approval row always implies the awaiting status.
+            self._transition("awaiting_command_approval")
             approval_id = self.channel.request_approval(
                 "command",
                 {"command": command, "reasons": list(verdict.reasons), "phase": self.phase},
             )
-            self._transition("awaiting_command_approval")
             outcome = self._wait_approval(approval_id)
             self._transition(states.PHASE_STATUS[self.phase])
             if outcome.status == "rejected":
@@ -490,6 +528,14 @@ class WebAgent(DefaultAgent):
             return out
 
         out = self._with_retries("run_tests", attempt)
+        harness = self.harness
+        if harness is not None:
+            harness.record_run(
+                tool_call_id=tool_call_id,
+                selector=args.get("selector"),
+                output=out,
+                phase=self.phase,
+            )
         if not self._switch_trigger(out, args.get("selector")):
             return out, False
         self._switch_to_verify(tool_call_id, args.get("selector"))
@@ -528,13 +574,46 @@ class WebAgent(DefaultAgent):
         name = getattr(self.model, "current_model", None)
         return None if name is None else str(name)
 
+    def _record_evidence(self, args: dict[str, Any]) -> dict[str, Any]:
+        note = {"kind": args["kind"], "note": args["note"], "command": args.get("command")}
+        harness = self.harness
+        if harness is None:  # opt-out (M4 stub)
+            self.channel.emit("evidence", note)
+            return _result("recorded", 0)
+        # Untrusted agent text: an event, never an evidence row (m5 §0.7).
+        self.channel.emit("evidence_note", note)
+        return _result(harness.status_text(), 0)
+
+    def _backstop(self, harness: EvidenceHarness) -> None:
+        """m5 §12 A1: an investigate-phase change needs the user's approval to stand."""
+        report = harness.check_readonly()
+        if not any(report.get("counts", {}).values()):
+            return
+        self.channel.emit("backstop_violation", report)
+        payload: dict[str, Any] = dict(report)
+        readonly_diff = getattr(harness, "readonly_diff", None)
+        if callable(readonly_diff):
+            diff, truncated = readonly_diff()
+            payload["diff"] = diff
+            payload["diff_truncated"] = truncated
+        self._transition("awaiting_command_approval")
+        approval_id = self.channel.request_approval("readonly_violation", payload)
+        outcome = self._wait_approval(approval_id)
+        self._transition(states.PHASE_STATUS[self.phase])
+        if outcome.status != "approved":
+            raise ReadOnlyViolation()
+        self._with_retries("baseline", lambda: harness.rebaseline(approval_id=approval_id))
+
     def _submit_plan(self, args: dict[str, Any]) -> dict[str, Any]:
+        harness = self.harness
+        if harness is not None:
+            self._backstop(harness)
         try:
             plan = Plan.model_validate(args)
         except ValidationError as exc:
             raise ToolError(f"invalid plan: {exc}") from exc
-        approval_id = self.channel.request_approval("plan", plan.model_dump())
         self._transition("awaiting_plan_approval", phase="plan")
+        approval_id = self.channel.request_approval("plan", plan.model_dump())
         outcome = self._wait_approval(approval_id)
         if outcome.status == "approved":
             self._transition("executing", phase="execute")
