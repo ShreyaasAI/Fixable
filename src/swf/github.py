@@ -1,18 +1,23 @@
 """Minimal GitHub REST client using the user's OAuth token (backend only).
 
-M1: identify the token's owner and list repos. Clone/push/PR arrive in M6.
+M1: identify the token's owner and list repos. M2: repo metadata, branch check and `AGENTS.md`
+contents for pre-flight (this is also the repo/branch access check). Clone/push/PR arrive in M6.
 The token is only ever sent to the configured API host; pagination links pointing elsewhere are
-refused.
+refused and redirects are never followed.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 USER_AGENT = "swf-agent"
+MAX_FILE_BYTES = 1024 * 1024
 
 
 class GitHubError(Exception):
@@ -21,6 +26,14 @@ class GitHubError(Exception):
 
 class GitHubAuthError(GitHubError):
     """GitHub rejected the token (revoked, expired or wrong)."""
+
+
+class GitHubNotFound(GitHubError):
+    """404: the resource does not exist or the token cannot see it (GitHub does not say which)."""
+
+
+class GitHubFileTooLarge(GitHubError):
+    """`get_file` target is over MAX_FILE_BYTES; the message is shown to the user."""
 
 
 @dataclass(frozen=True)
@@ -36,6 +49,15 @@ class Repo:
     default_branch: str
     private: bool
     can_push: bool
+
+
+@dataclass(frozen=True)
+class RepoMeta:
+    full_name: str
+    default_branch: str
+    private: bool
+    can_push: bool
+    size_kb: int
 
 
 class GitHubClient:
@@ -103,6 +125,58 @@ class GitHubClient:
                 nxt = resp.links.get("next", {}).get("url")
                 url = httpx.URL(nxt) if nxt else None
         return repos
+
+    def get_repo(self, token: str, full_name: str) -> RepoMeta:
+        with self._client(token) as client:
+            resp = client.get(f"/repos/{quote(full_name, safe='/')}")
+        if resp.status_code == 404:
+            raise GitHubNotFound(f"repository {full_name} not found")
+        self._check(resp)
+        data = resp.json()
+        repo = _repo(data)
+        return RepoMeta(
+            full_name=repo.full_name,
+            default_branch=repo.default_branch,
+            private=repo.private,
+            can_push=repo.can_push,
+            size_kb=int(data.get("size") or 0),
+        )
+
+    def branch_exists(self, token: str, full_name: str, branch: str) -> bool:
+        path = f"/repos/{quote(full_name, safe='/')}/branches/{quote(branch, safe='/')}"
+        with self._client(token) as client:
+            resp = client.get(path)
+        if resp.status_code == 404:
+            return False
+        self._check(resp)
+        return True
+
+    def get_file(self, token: str, full_name: str, path: str, *, ref: str) -> str | None:
+        """UTF-8 text of a file at `ref`, or None if absent; files over 1 MiB are refused."""
+        url = f"/repos/{quote(full_name, safe='/')}/contents/{quote(path, safe='/')}"
+        with self._client(token) as client:
+            resp = client.get(url, params={"ref": ref})
+        if resp.status_code == 404:
+            return None
+        self._check(resp)
+        data = resp.json()
+        if not isinstance(data, dict) or data.get("type") != "file":
+            raise GitHubError(f"{path} is not a regular file")
+        size = data.get("size")
+        if isinstance(size, int) and size > MAX_FILE_BYTES:
+            raise GitHubFileTooLarge(f"{path} is larger than 1 MiB ({size} bytes)")
+        if data.get("encoding") != "base64" or not isinstance(data.get("content"), str):
+            raise GitHubError(f"{path} has no inline base64 content")
+        try:
+            raw = base64.b64decode(data["content"])
+        except (binascii.Error, ValueError) as exc:
+            raise GitHubError(f"{path} content is not valid base64") from exc
+        if len(raw) > MAX_FILE_BYTES:
+            raise GitHubFileTooLarge(f"{path} is larger than 1 MiB ({len(raw)} bytes)")
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise GitHubError(f"{path} is not UTF-8 text") from exc
 
 
 def _repo(item: dict[str, Any]) -> Repo:

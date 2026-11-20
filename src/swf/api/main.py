@@ -11,6 +11,8 @@ from swf.api.app import AppDeps, create_app
 from swf.auth import JwtVerifier, jwks_resolver
 from swf.db import Database
 from swf.github import GitHubClient
+from swf.images import RegistryClient
+from swf.preflight import PreflightService
 from swf.settings import Settings
 from swf.tokens import TokenCipher
 
@@ -18,6 +20,7 @@ from swf.tokens import TokenCipher
 def create_app_from_env() -> FastAPI:
     settings = Settings.from_env()
     db = Database(settings.database_url)
+    github = GitHubClient(base_url=settings.github_api_url)
     deps = AppDeps(
         db=db,
         verifier=JwtVerifier(
@@ -26,7 +29,8 @@ def create_app_from_env() -> FastAPI:
             hs256_secret=settings.supabase_jwt_secret,
         ),
         cipher=TokenCipher(settings.token_encryption_key),
-        github=GitHubClient(base_url=settings.github_api_url),
+        github=github,
+        preflight=PreflightService(github=github, registry=RegistryClient()),
     )
 
     @asynccontextmanager

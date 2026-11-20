@@ -1,7 +1,7 @@
 # Web Coding Agent — Problem Specification (v2)
 
 - **Purpose:** Define *what* the MVP must do and *why*, precisely enough that a new session can plan and build it without the original transcript.
-- **Last updated:** 2026-11-19
+- **Last updated:** 2026-11-20
 - **Status:** Approved (v2, 2026-11-19 — supersedes v1). Zero-cost constraint applied 2026-11-19
 - **Related artifacts:** `docs/software-factory/research-plan.md` (Approved) · `docs/software-factory/implementation-plan.md` (Under review) · `PROMPT.md` (process rules) · `system_prompts/Cursor_*` (agent prompt baseline)
 
@@ -163,7 +163,7 @@ Other end states: `rejected`, `failed` (with partial evidence), `interrupted` (r
 1. Quota values — proposed defaults: 5 tasks/user/day, $1 cost cap per task, $3 per user per day, max 1 concurrent task per user [P].
 2. Quota values above were proposed; accepted as defaults with the spec approval (2026-11-19).
 
-Resolved 2026-11-19: open beta + abuse controls (replaces invite-only); GitHub access = OAuth user token; per-task 4 GB / 2 vCPU; guard model `zai/glm-4.7-flash`; host = Oracle Always Free (2 tasks); Supabase Free.
+Resolved 2026-11-19: open beta + abuse controls (replaces invite-only); GitHub access = OAuth user token; per-task 4 GB / 1 OCPU (= 1 vCPU on Arm; corrected 2026-11-20, user); guard model `zai/glm-4.7-flash`; host = Oracle Always Free (2 tasks); Supabase Free.
 
 ## 13. Assumptions [A]
 

@@ -5,6 +5,8 @@ Every mutating call must write exactly one audit row in the same transaction.
 
 from __future__ import annotations
 
+import json
+import random
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -12,7 +14,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from helpers import FakeGitHub, FakeUser, repo_json
+from helpers import FakeGitHub, FakeRegistry, FakeUser, agents_md, index_manifest, repo_json
 
 from swf import store
 from swf.db import Database
@@ -27,6 +29,51 @@ NEW_TASK = {
     "description": "test_paginate fails on the last page",
     "failing_test": "tests/test_pages.py::test_last_page",
 }
+
+
+def _new_user(
+    database: Database,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+    *,
+    linked: bool = True,
+    login: str | None = None,
+) -> FakeUser:
+    """A signed-in user; when `linked`, a GitHub token is stored by raw SQL (no audit row)."""
+    uid = uuid.uuid4()
+    user = FakeUser(
+        id=uid, github_id=random.randint(1, 2**40), login=login or f"user-{uid.hex[:8]}"
+    )
+    meta = {"user_name": user.login, "provider_id": str(user.github_id)}
+    with database.backend() as conn:
+        conn.execute(
+            "insert into auth.users (id, email, raw_user_meta_data) values (%s, %s, %s)",
+            [user.id, f"{user.login}@example.test", json.dumps(meta)],
+        )
+        if linked:
+            token = f"gho_{uuid.uuid4().hex}"
+            github.users[token] = (user.github_id, user.login)
+            conn.execute(
+                "insert into profiles (user_id, github_login) values (%s, %s)"
+                " on conflict (user_id) do nothing",
+                [user.id, user.login],
+            )
+            conn.execute(
+                "insert into github_tokens (user_id, encrypted_token, scopes, github_user_id)"
+                " values (%s, %s, %s, %s)",
+                [user.id, cipher.encrypt(token), ["repo", "read:user"], user.github_id],
+            )
+    return user
+
+
+@pytest.fixture
+def make_user(db: Database, github: FakeGitHub, cipher: TokenCipher) -> MakeUser:
+    """Overrides conftest's: users have a linked GitHub token unless `linked=False`."""
+
+    def _make(login: str | None = None, *, linked: bool = True) -> FakeUser:
+        return _new_user(db, github, cipher, linked=linked, login=login)
+
+    return _make
 
 
 def _audit(db: Database, user: FakeUser) -> list[dict[str, Any]]:
@@ -98,7 +145,7 @@ def test_disabled_account_forbidden(
 def test_me_creates_profile_and_reports_usage(
     client: TestClient, auth: AuthFn, make_user: MakeUser
 ) -> None:
-    user = make_user()
+    user = make_user(linked=False)
     resp = client.get("/v1/me", headers=auth(user))
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
@@ -113,7 +160,7 @@ def test_me_creates_profile_and_reports_usage(
 def test_github_token_must_belong_to_signed_in_account(
     client: TestClient, auth: AuthFn, make_user: MakeUser, github: FakeGitHub, db: Database
 ) -> None:
-    user = make_user()
+    user = make_user(linked=False)
     github.users["gho_someone_else"] = (user.github_id + 1, "someone-else")
     resp = client.post(
         "/v1/me/github-token", json={"provider_token": "gho_someone_else"}, headers=auth(user)
@@ -127,7 +174,9 @@ def test_github_token_must_belong_to_signed_in_account(
 
 def test_github_token_invalid(client: TestClient, auth: AuthFn, make_user: MakeUser) -> None:
     resp = client.post(
-        "/v1/me/github-token", json={"provider_token": "gho_revoked"}, headers=auth(make_user())
+        "/v1/me/github-token",
+        json={"provider_token": "gho_revoked"},
+        headers=auth(make_user(linked=False)),
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "github_token_invalid"
@@ -141,7 +190,7 @@ def test_github_token_stored_encrypted_and_audited_without_secret(
     db: Database,
     cipher: TokenCipher,
 ) -> None:
-    user = make_user()
+    user = make_user(linked=False)
     secret = f"gho_{uuid.uuid4().hex}"
     github.users[secret] = (user.github_id, user.login)
     resp = client.post("/v1/me/github-token", json={"provider_token": secret}, headers=auth(user))
@@ -168,7 +217,7 @@ def test_github_token_stored_encrypted_and_audited_without_secret(
 def test_github_token_body_validation(
     client: TestClient, auth: AuthFn, make_user: MakeUser
 ) -> None:
-    user = make_user()
+    user = make_user(linked=False)
     for body in [{}, {"provider_token": ""}, {"provider_token": "x" * 5000}]:
         resp = client.post("/v1/me/github-token", json=body, headers=auth(user))
         assert resp.status_code == 422, body
@@ -186,7 +235,7 @@ def _link_token(client: TestClient, auth: AuthFn, user: FakeUser, github: FakeGi
 
 
 def test_repos_requires_linked_token(client: TestClient, auth: AuthFn, make_user: MakeUser) -> None:
-    resp = client.get("/v1/repos", headers=auth(make_user()))
+    resp = client.get("/v1/repos", headers=auth(make_user(linked=False)))
     assert resp.status_code == 409
     assert resp.json()["detail"] == "github_token_missing"
 
@@ -194,7 +243,7 @@ def test_repos_requires_linked_token(client: TestClient, auth: AuthFn, make_user
 def test_repos_lists_from_github(
     client: TestClient, auth: AuthFn, make_user: MakeUser, github: FakeGitHub
 ) -> None:
-    user = make_user()
+    user = make_user(linked=False)
     secret = _link_token(client, auth, user, github)
     github.repos[secret] = [
         repo_json("octo/a"),
@@ -213,7 +262,7 @@ def test_repos_lists_from_github(
 def test_repos_revoked_token(
     client: TestClient, auth: AuthFn, make_user: MakeUser, github: FakeGitHub
 ) -> None:
-    user = make_user()
+    user = make_user(linked=False)
     secret = _link_token(client, auth, user, github)
     del github.users[secret]
     resp = client.get("/v1/repos", headers=auth(user))
@@ -229,9 +278,10 @@ def test_create_task(client: TestClient, auth: AuthFn, make_user: MakeUser, db: 
     resp = client.post("/v1/tasks", json=NEW_TASK, headers=auth(user))
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["preflight"] is None  # pre-flight arrives in M2
     task = body["task"]
-    assert task["status"] == "created"
+    # The decision depends on what else ran on the shared database: admit or queue.
+    assert body["preflight"]["decision"] in {"admit", "queue"}
+    assert task["status"] == "queued"
     assert task["phase"] is None
     assert {k: task[k] for k in NEW_TASK} == NEW_TASK
     assert task["cost_usd"] == 0.0
@@ -528,3 +578,389 @@ def test_every_mutation_writes_one_audit_row(
     with db.as_user(a.claims()) as conn:
         visible = conn.execute("select count(*) as n from audit_log").fetchone()
     assert visible is not None and visible["n"] == 5
+
+
+# --- pre-flight at task creation (private database per test) --------------------------------
+
+REPO = NEW_TASK["repo"]
+DOCKER_HUB = "registry-1.docker.io"
+
+
+def _seed_task(
+    database: Database,
+    user: FakeUser,
+    status: str,
+    *,
+    mb: int | None = 4096,
+    cpu: float | None = 1.0,
+) -> None:
+    """Insert a task straight into the database (backend role), as the worker would have."""
+    with database.backend() as conn:
+        conn.execute(
+            "insert into profiles (user_id, github_login) values (%s, %s)"
+            " on conflict (user_id) do nothing",
+            [user.id, user.login],
+        )
+        conn.execute(
+            "insert into tasks (user_id, repo, base_branch, description, status,"
+            " reservation_mb, reservation_cpu) values (%s, 'o/r', 'main', 'x', %s, %s, %s)",
+            [user.id, status, mb, cpu],
+        )
+
+
+def _post(client: TestClient, auth: AuthFn, user: FakeUser) -> Any:
+    return client.post("/v1/tasks", json=NEW_TASK, headers=auth(user))
+
+
+def _warning_codes(preflight: dict[str, Any]) -> list[str]:
+    return [w["code"] for w in preflight["warnings"]]
+
+
+def _task_count(database: Database, user: FakeUser) -> int:
+    with database.backend() as conn:
+        row = conn.execute(
+            "select count(*) as n from tasks where user_id = %s", [user.id]
+        ).fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
+def test_preflight_admits_with_reservation_from_agents_md(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    github.repo_host.agents[REPO] = agents_md(memory_mb=768, cpus=0.5)
+    user = _new_user(fresh_db, github, cipher)
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    pre = body["preflight"]
+    assert pre["decision"] == "admit"
+    assert (pre["image"], pre["memory_mb"], pre["cpus"]) == ("python:3.12-slim", 768, 0.5)
+    assert pre["queue_position"] is None
+    assert pre["warnings"] == []
+    task = body["task"]
+    assert task["status"] == "queued"
+    assert (task["reservation_mb"], task["reservation_cpu"]) == (768, 0.5)
+    assert task["preflight"] == pre
+    usage = fresh_client.get("/v1/me", headers=auth(user)).json()["usage_today"]
+    assert usage["tasks"] == 1
+    audit = _audit(fresh_db, user)
+    assert [(a["action"], a["target"]) for a in audit] == [("task.create", task["id"])]
+    assert audit[0]["payload"] == {"repo": REPO, "base_branch": "main", "preflight": "admit"}
+
+
+def test_preflight_over_limit_is_rejected_and_not_counted(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    github.repo_host.agents[REPO] = agents_md(memory_mb=8192, cpus=0.5)
+    user = _new_user(fresh_db, github, cipher)
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["preflight"]["decision"] == "reject"
+    assert "over_task_limit" in _warning_codes(body["preflight"])
+    assert body["preflight"]["queue_position"] is None
+    task = body["task"]
+    assert task["status"] == "rejected"
+    assert task["reservation_mb"] is None
+    assert task["reservation_cpu"] is None
+    # A rejected task is stored and audited, but does not use the daily task quota.
+    assert _task_count(fresh_db, user) == 1
+    usage = fresh_client.get("/v1/me", headers=auth(user)).json()["usage_today"]
+    assert usage["tasks"] == 0
+    with fresh_db.backend() as conn:
+        rows = conn.execute("select * from quotas_usage where user_id = %s", [user.id]).fetchall()
+    assert all(r["tasks"] == 0 for r in rows)
+    audit = _audit(fresh_db, user)
+    assert [a["action"] for a in audit] == ["task.create"]
+    assert audit[0]["payload"]["preflight"] == "reject"
+
+
+def test_preflight_non_arm64_image_is_rejected(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+    registry: FakeRegistry,
+) -> None:
+    registry.manifests[(DOCKER_HUB, "library/python", "3.12-slim")] = index_manifest("linux/amd64")
+    user = _new_user(fresh_db, github, cipher)
+    body = _post(fresh_client, auth, user).json()
+    assert body["preflight"]["decision"] == "reject"
+    assert "image_not_arm64" in _warning_codes(body["preflight"])
+    assert body["task"]["status"] == "rejected"
+
+
+def test_preflight_missing_agents_md_queues_with_defaults(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    github.repo_host.agents[REPO] = None
+    user = _new_user(fresh_db, github, cipher)
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    pre = body["preflight"]
+    assert pre["decision"] == "admit"
+    assert (pre["image"], pre["memory_mb"], pre["cpus"]) == ("python:3.12-slim", 2048, 1.0)
+    assert _warning_codes(pre) == ["agents_md_missing"]
+    assert body["task"]["status"] == "queued"
+    assert (body["task"]["reservation_mb"], body["task"]["reservation_cpu"]) == (2048, 1.0)
+
+
+def test_preflight_invalid_agents_md_is_rejected(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    github.repo_host.agents[REPO] = "# Just prose, no agent-config block\n"
+    user = _new_user(fresh_db, github, cipher)
+    body = _post(fresh_client, auth, user).json()
+    assert body["preflight"]["decision"] == "reject"
+    assert "agents_md_invalid" in _warning_codes(body["preflight"])
+    assert body["task"]["status"] == "rejected"
+    assert body["task"]["reservation_mb"] is None
+
+
+def test_preflight_repo_missing_is_422_and_leaves_no_trace(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    github.repo_host.missing_repos.add(REPO)
+    user = _new_user(fresh_db, github, cipher)
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "repo_not_found"
+    assert _task_count(fresh_db, user) == 0
+    assert _audit(fresh_db, user) == []
+    assert fresh_client.get("/v1/me", headers=auth(user)).json()["usage_today"]["tasks"] == 0
+
+
+def test_preflight_branch_missing_is_422_and_leaves_no_trace(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    github.repo_host.missing_branches.add("main")
+    user = _new_user(fresh_db, github, cipher)
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "branch_not_found"
+    assert _task_count(fresh_db, user) == 0
+    assert _audit(fresh_db, user) == []
+
+
+def test_preflight_without_linked_token_is_409(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    user = _new_user(fresh_db, github, cipher, linked=False)
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "github_token_missing"
+    assert _task_count(fresh_db, user) == 0
+    assert _audit(fresh_db, user) == []
+
+
+def test_preflight_undecryptable_token_is_409(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    user = _new_user(fresh_db, github, cipher)
+    with fresh_db.backend() as conn:
+        conn.execute(
+            "update github_tokens set encrypted_token = 'not-a-fernet-blob' where user_id = %s",
+            [user.id],
+        )
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "github_token_invalid"
+    assert _task_count(fresh_db, user) == 0
+
+
+def test_preflight_revoked_token_is_409(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    user = _new_user(fresh_db, github, cipher)
+    github.users.clear()  # GitHub now answers 401 to the stored token
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "github_token_invalid"
+    assert _task_count(fresh_db, user) == 0
+    assert _audit(fresh_db, user) == []
+
+
+def test_preflight_queues_when_two_tasks_are_active(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    other = _new_user(fresh_db, github, cipher, linked=False)
+    _seed_task(fresh_db, other, "executing", mb=512, cpu=0.5)
+    _seed_task(fresh_db, other, "executing", mb=512, cpu=0.5)
+    user = _new_user(fresh_db, github, cipher)
+
+    first = _post(fresh_client, auth, user).json()
+    assert first["preflight"]["decision"] == "queue"
+    assert first["preflight"]["queue_position"] == 1
+    assert "host_busy" in _warning_codes(first["preflight"])
+    assert first["task"]["status"] == "queued"
+    assert first["task"]["reservation_mb"] == 512  # the estimate, not the limit
+
+    second = _post(fresh_client, auth, user).json()
+    assert second["preflight"]["decision"] == "queue"
+    assert second["preflight"]["queue_position"] == 2
+
+
+def test_preflight_counts_waiting_tasks_as_demand(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    other = _new_user(fresh_db, github, cipher, linked=False)
+    _seed_task(fresh_db, other, "queued", mb=None, cpu=None)  # 4096 MB / 1 vCPU by default
+    user = _new_user(fresh_db, github, cipher)
+
+    # An idle host plus one waiting task still has room for a second one (2 concurrent).
+    first = _post(fresh_client, auth, user).json()
+    assert first["preflight"]["decision"] == "admit"
+    assert first["preflight"]["queue_position"] is None
+    assert first["task"]["status"] == "queued"
+
+    # Now two tasks are in demand: the third one waits, first in line behind them.
+    second = _post(fresh_client, auth, user).json()
+    assert second["preflight"]["decision"] == "queue"
+    assert second["preflight"]["queue_position"] == 1
+    assert "host_busy" in _warning_codes(second["preflight"])
+
+    third = _post(fresh_client, auth, user).json()
+    assert third["preflight"]["decision"] == "queue"
+    assert third["preflight"]["queue_position"] == 2
+
+
+def test_preflight_one_active_and_one_queued_means_queue(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    other = _new_user(fresh_db, github, cipher, linked=False)
+    _seed_task(fresh_db, other, "executing", mb=512, cpu=0.5)
+    _seed_task(fresh_db, other, "queued", mb=512, cpu=0.5)
+    user = _new_user(fresh_db, github, cipher)
+    pre = _post(fresh_client, auth, user).json()["preflight"]
+    assert (pre["decision"], pre["queue_position"]) == ("queue", 1)
+
+
+def test_preflight_admits_with_one_active_task(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    other = _new_user(fresh_db, github, cipher, linked=False)
+    _seed_task(fresh_db, other, "investigating", mb=512, cpu=0.5)
+    user = _new_user(fresh_db, github, cipher)
+    pre = _post(fresh_client, auth, user).json()["preflight"]
+    assert pre["decision"] == "admit"
+    assert pre["queue_position"] is None
+
+
+def test_finished_tasks_do_not_hold_capacity(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    other = _new_user(fresh_db, github, cipher, linked=False)
+    for status in ("completed", "failed", "cancelled", "interrupted", "rejected", "created"):
+        _seed_task(fresh_db, other, status)
+    user = _new_user(fresh_db, github, cipher)
+    assert _post(fresh_client, auth, user).json()["preflight"]["decision"] == "admit"
+
+
+def test_get_task_returns_stored_preflight(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    user = _new_user(fresh_db, github, cipher)
+    created = _post(fresh_client, auth, user).json()
+    got = fresh_client.get(f"/v1/tasks/{created['task']['id']}", headers=auth(user))
+    assert got.status_code == 200, got.text
+    assert got.json()["preflight"] == created["preflight"]
+    listed = fresh_client.get("/v1/tasks", headers=auth(user)).json()
+    assert listed[0]["preflight"] == created["preflight"]
+
+
+def test_preflight_oversized_agents_md_is_rejected(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    github.repo_host.agents[REPO] = "x" * (1024 * 1024 + 1)
+    user = _new_user(fresh_db, github, cipher)
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["preflight"]["decision"] == "reject"
+    assert _warning_codes(body["preflight"]) == ["agents_md_invalid"]
+    assert body["task"]["status"] == "rejected"
+    assert fresh_client.get("/v1/me", headers=auth(user)).json()["usage_today"]["tasks"] == 0
+
+
+def test_preflight_repo_without_push_access_is_422_and_leaves_no_trace(
+    fresh_client: TestClient,
+    fresh_db: Database,
+    auth: AuthFn,
+    github: FakeGitHub,
+    cipher: TokenCipher,
+) -> None:
+    github.repo_host.readonly_repos.add(REPO)
+    user = _new_user(fresh_db, github, cipher)
+    resp = _post(fresh_client, auth, user)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "repo_not_writable"
+    assert _task_count(fresh_db, user) == 0
+    assert _audit(fresh_db, user) == []
+    assert fresh_client.get("/v1/me", headers=auth(user)).json()["usage_today"]["tasks"] == 0

@@ -1,10 +1,15 @@
-"""Backend API v1, M1 subset (implementation-plan §4).
+"""Backend API v1, M1 + M2 subset (implementation-plan §4).
 
 Every `/v1` route requires a Supabase user JWT. Reads go through `Database.as_user` (RLS);
 writes go through `Database.backend` with the user id taken from the verified token, and each
 write records its audit row in the same transaction.
 
-Deferred: pre-flight (M2), SSE events (M4), evidence (M5), task delete + workspace (M6),
+`POST /v1/tasks` runs pre-flight (M2) over the GitHub API before writing anything: a missing
+repo/branch, no push access, or a GitHub failure creates no row; a pre-flight reject is stored
+as a `rejected` task (shown to the user, not counted against the quota); admit/queue store a
+`queued` task with its reservation.
+
+Deferred: SSE events (M4), evidence (M5), task delete + workspace (M6),
 quota enforcement / rate limits / kill switch (M8).
 """
 
@@ -24,6 +29,13 @@ from swf import store
 from swf.auth import AuthError, JwtVerifier, Principal
 from swf.db import Database
 from swf.github import GitHubAuthError, GitHubClient, GitHubError
+from swf.preflight import (
+    BranchNotFound,
+    PreflightResult,
+    PreflightService,
+    RepoNotFound,
+    RepoNotWritable,
+)
 from swf.tokens import TokenCipher, TokenDecryptError
 
 REPO_RE = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
@@ -40,6 +52,7 @@ class AppDeps:
     verifier: JwtVerifier
     cipher: TokenCipher
     github: GitHubClient
+    preflight: PreflightService
     clock: Callable[[], datetime] = _utcnow
 
     def today(self) -> date:
@@ -96,7 +109,7 @@ class TaskCreate(_Body):
 
 class TaskCreated(BaseModel):
     task: store.Task
-    preflight: None = None  # M2
+    preflight: PreflightResult
 
 
 class GitHubTokenIn(_Body):
@@ -228,6 +241,30 @@ def create_app(
     @app.post("/v1/tasks", status_code=status.HTTP_201_CREATED)
     def create_task(user: User, body: TaskCreate) -> TaskCreated:
         with deps.db.backend() as conn:
+            blob = store.get_encrypted_github_token(conn, user.id)
+            capacity = store.capacity_snapshot(conn)
+        if blob is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_missing")
+        try:
+            token = deps.cipher.decrypt(blob)
+        except TokenDecryptError:
+            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_invalid") from None
+        try:
+            result = deps.preflight.check(token, body.repo, body.base_branch, capacity)
+        except RepoNotFound:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "repo_not_found") from None
+        except BranchNotFound:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "branch_not_found") from None
+        except RepoNotWritable:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "repo_not_writable"
+            ) from None
+        except GitHubAuthError:
+            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_invalid") from None
+        except GitHubError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "github_unavailable") from None
+        rejected = result.decision == "reject"
+        with deps.db.backend() as conn:
             task = store.create_task(
                 conn,
                 user.id,
@@ -236,8 +273,12 @@ def create_app(
                 description=body.description,
                 failing_test=body.failing_test,
                 day=deps.today(),
+                status="rejected" if rejected else "queued",
+                reservation_mb=None if rejected else result.memory_mb,
+                reservation_cpu=None if rejected else result.cpus,
+                preflight=result,
             )
-        return TaskCreated(task=task)
+        return TaskCreated(task=task, preflight=result)
 
     @app.get("/v1/tasks")
     def list_tasks(user: User) -> list[store.Task]:

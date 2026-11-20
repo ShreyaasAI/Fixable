@@ -19,6 +19,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, field_validator
 
 from swf.db import Conn
+from swf.preflight import Capacity, PreflightResult, Reservation
 
 TASK_STATUSES = (
     "created",
@@ -39,6 +40,21 @@ TASK_STATUSES = (
     "cancelled",
 )
 TERMINAL_STATUSES = frozenset({"completed", "rejected", "failed", "interrupted", "cancelled"})
+# Statuses that hold a container (or are about to); they count against host capacity.
+ACTIVE_STATUSES = (
+    "preparing",
+    "investigating",
+    "awaiting_plan_approval",
+    "executing",
+    "awaiting_command_approval",
+    "awaiting_input",
+    "verifying",
+    "confirming",
+    "opening_pr",
+)
+# Reservation assumed for an active row without one: the per-task maximum.
+_DEFAULT_RESERVATION_MB = 4096
+_DEFAULT_RESERVATION_CPU = 1.0
 
 ApprovalKind = Literal["plan", "command", "guard_flag"]
 Decision = Literal["approve", "reject"]
@@ -71,6 +87,7 @@ class Task(BaseModel):
     reservation_cpu: float | None
     cost_usd: float
     pr_url: str | None
+    preflight: PreflightResult | None
     created_at: datetime
     updated_at: datetime
 
@@ -190,7 +207,7 @@ def get_usage(conn: Conn, user_id: uuid.UUID, day: date) -> Usage:
 
 def list_tasks(conn: Conn, user_id: uuid.UUID, *, limit: int = 50) -> list[Task]:
     rows = conn.execute(
-        "select * from public.tasks where user_id = %s order by created_at desc, id limit %s",
+        "select * from public.tasks where user_id = %s order by created_seq desc limit %s",
         [user_id, limit],
     ).fetchall()
     return [Task.model_validate(r) for r in rows]
@@ -215,21 +232,64 @@ def create_task(
     description: str,
     failing_test: str | None,
     day: date,
+    status: str,
+    reservation_mb: int | None,
+    reservation_cpu: float | None,
+    preflight: PreflightResult | None,
 ) -> Task:
+    """A task rejected at pre-flight is recorded but not counted against the daily quota."""
     row = conn.execute(
-        "insert into public.tasks (user_id, repo, base_branch, description, failing_test)"
-        " values (%s, %s, %s, %s, %s) returning *",
-        [user_id, repo, base_branch, description, failing_test],
+        "insert into public.tasks (user_id, repo, base_branch, description, failing_test,"
+        " status, reservation_mb, reservation_cpu, preflight)"
+        " values (%s, %s, %s, %s, %s, %s, %s, %s, %s) returning *",
+        [
+            user_id,
+            repo,
+            base_branch,
+            description,
+            failing_test,
+            status,
+            reservation_mb,
+            reservation_cpu,
+            None if preflight is None else Jsonb(preflight.model_dump(mode="json")),
+        ],
     ).fetchone()
     assert row is not None
     task = Task.model_validate(row)
-    conn.execute(
-        "insert into public.quotas_usage (user_id, day, tasks) values (%s, %s, 1)"
-        " on conflict (user_id, day) do update set tasks = public.quotas_usage.tasks + 1",
-        [user_id, day],
+    if status != "rejected":
+        conn.execute(
+            "insert into public.quotas_usage (user_id, day, tasks) values (%s, %s, 1)"
+            " on conflict (user_id, day) do update set tasks = public.quotas_usage.tasks + 1",
+            [user_id, day],
+        )
+    _audit(
+        conn,
+        user_id,
+        "task.create",
+        str(task.id),
+        {
+            "repo": repo,
+            "base_branch": base_branch,
+            "preflight": None if preflight is None else preflight.decision,
+        },
     )
-    _audit(conn, user_id, "task.create", str(task.id), {"repo": repo, "base_branch": base_branch})
     return task
+
+
+def capacity_snapshot(conn: Conn) -> Capacity:
+    """Host-wide (all users) reservations of active tasks and of queued tasks (FIFO order)."""
+    rows = conn.execute(
+        "select status, coalesce(reservation_mb, %s) as mb, coalesce(reservation_cpu, %s) as cpu"
+        " from public.tasks where status = any(%s) order by created_seq",
+        [_DEFAULT_RESERVATION_MB, _DEFAULT_RESERVATION_CPU, [*ACTIVE_STATUSES, "queued"]],
+    ).fetchall()
+    active = tuple(
+        Reservation(int(r["mb"]), float(r["cpu"])) for r in rows if r["status"] != "queued"
+    )
+    queued = tuple(
+        Reservation(int(r["mb"]), float(r["cpu"])) for r in rows if r["status"] == "queued"
+    )
+    return Capacity(active=active, queued=queued)
 
 
 def _lock_owned_task(conn: Conn, user_id: uuid.UUID, task_id: uuid.UUID) -> str:

@@ -1,7 +1,7 @@
 # Web Coding Agent — Implementation Plan
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
-- **Last updated:** 2026-11-19
+- **Last updated:** 2026-11-20
 - **Status:** Approved (user, 2026-11-19, together with M0). M1 built, awaiting review
 - **Related artifacts:** `docs/enterprise-agent/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
@@ -61,7 +61,7 @@ All endpoints require a Supabase JWT, except `/healthz`. Every mutating call wri
 | GET | `/v1/me` | User, quota usage |
 | POST | `/v1/me/github-token` | `{provider_token}` → 204. The browser sends the GitHub token Supabase returns at sign-in; the backend checks with GitHub that it belongs to the JWT's GitHub account, encrypts it (Fernet) and stores it. Never returned [D, 2026-11-19] |
 | GET | `/v1/repos` | User's GitHub repos (via the OAuth token) |
-| POST | `/v1/tasks` | Create task `{repo, base_branch, description, failing_test?}` → `{task, preflight}` |
+| POST | `/v1/tasks` | Create task `{repo, base_branch, description, failing_test?}` → 201 `{task, preflight}`. Pre-flight runs first (GitHub repo, branch, `AGENTS.md`; image arm64 check; capacity). Unknown repo → 422 `repo_not_found`, unknown branch → 422 `branch_not_found`, with no task row. A rejected estimate is stored as status `rejected`. The result is stored in `tasks.preflight` [D, 2026-11-20] |
 | GET | `/v1/tasks` / `/v1/tasks/{id}` | List / get |
 | GET | `/v1/tasks/{id}/events` | SSE stream (`Last-Event-ID` resume) |
 | POST | `/v1/tasks/{id}/approvals/{approval_id}` | `{decision: approve|reject, comment?}` — submitter only |
@@ -200,17 +200,25 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - [x] Migrations + RLS policies; FastAPI app; Supabase JWT verification; GitHub repo listing (mocked in tests)
 - **DoD:** API + RLS tests green against local Postgres. **Status 2026-11-19: done, awaiting review** (149 passed against `postgres:17-alpine` + `tests/fixtures/supabase_shim.sql`; ruff, ruff format, mypy strict clean). Mutation check: dropping the table revokes, opening the RLS policies, or dropping the write ownership check each turns tests red.
 - Files: `supabase/migrations/20261119000000_m1_init.sql`; `swf.{db,store,auth,tokens,github,settings}`, `swf.api.{app,main}`.
-- Deferred by design: `preflight` is `null` until M2; SSE `/events` → M4; `/evidence` → M5; `DELETE /v1/tasks/{id}` + workspace and the repo-access check at task creation → M6; quota *enforcement*, rate limits, kill switch → M8 (M1 only counts). The Supabase Free project is created in M8 (user, 2026-11-19); M1 runs on local Postgres only.
+- Deferred by design: `preflight` is `null` until M2; SSE `/events` → M4; `/evidence` → M5; `DELETE /v1/tasks/{id}` + workspace → M6; the repo/branch access check at task creation → M2 (moved from M6 [D, 2026-11-20]); quota *enforcement*, rate limits, kill switch → M8 (M1 only counts). The Supabase Free project is created in M8 (user, 2026-11-19); M1 runs on local Postgres only.
 
 ### M2 — Sandbox, egress proxy, pre-flight
-- [ ] Tests: allowlisted registry reachable, other hosts blocked; token absent from the container; memory/CPU/pids limits; orphan cleanup; arm64 image check; over-threshold warning before start; queueing at capacity
-- [ ] `SandboxEnv`, proxy config, `swf.preflight`
-- **DoD:** Docker-marked tests green locally.
+- [x] Tests: allowlisted registry reachable, other hosts blocked; token absent from the container; memory/CPU/pids limits; orphan cleanup; arm64 image check; over-threshold warning before start; queueing at capacity
+- [x] `SandboxEnv`, proxy config, `swf.preflight`
+- **DoD:** Docker-marked tests green locally. **Status 2026-11-20: done, awaiting review** (405 passed, 1 skipped (Windows-only path case), incl. all docker/network tests and the 10 seeds set up and verified inside the sandbox; ruff, ruff format, mypy strict clean; 0 Docker leftovers). Built by 4 parallel agents per the user; the contract was amended (v2 §9: per-task networks, execution-time image/limit checks, queued tasks count in admission). Checker mutation run: 9/9 security mutations caught. Process deviation (user's instruction): tests were written alongside the code from the contract, not seen red first; the two post-review fixes (deterministic task order via `tasks.created_seq`; `render_squid_conf` re-validates domains) were red-first.
+- Interface contract for the parallel build: `docs/software-factory/m2-contract.md`.
+- Decisions [D, 2026-11-20] (user): egress proxy = Squid, image `ubuntu/squid:6.6-24.04_edge` (multi-arch incl. arm64); only `squid.conf` is ours, `cache deny all`. The 1-day package cache is deferred to M9; M2 is allowlist only. An estimate above the per-task limit is rejected at creation: the task row is stored as `rejected` before any container starts, and it does not count toward the daily task quota (this is how M2 meets "over-threshold warning before start"). 1 vCPU per task (`--cpus 1`), 4 GB. Host capacity for admission: 2 concurrent tasks, 8192 MB, 2.0 CPUs (the 12 GB host keeps 4 GB for OS/API/worker/proxy). Registry allowlist as the SSRF guard, because `image:` comes from the user's repo: `registry-1.docker.io` (`docker.io`/`index.docker.io` normalise to it), `ghcr.io`, `quay.io`, `public.ecr.aws`, `mcr.microsoft.com`, `registry.gitlab.com`. Sandboxes get no external DNS (`--dns 127.0.0.1`) and reach the proxy by its IP on the internal network; Squid resolves names. Pre-flight runs inside `POST /v1/tasks` through the GitHub API (repo, branch, `AGENTS.md`), so the repo/branch access check moves from M6 to M2. Seeds' `setup` installs `pytest==9.2.0` through the proxy. Test runs set `PYTHONDONTWRITEBYTECODE=1` on the host and in the container.
+- Files: `src/swf/images.py` (new: image-ref parser, registry allowlist, anonymous manifest/platform lookup) · `src/swf/preflight.py` (new: `Limits`, pure `evaluate`, `PreflightService` over GitHub + registry + capacity) · `src/swf/sandbox.py` (new: `SandboxSpec`, hardened `docker run` args, `SandboxEnv(DockerEnvironment)` with synchronous cleanup, label-based `cleanup_orphans`) · `src/swf/egress.py` (new: `squid.conf` renderer, `ensure_egress`/`teardown_egress` for the internal network + proxy container) · `src/swf/github.py` (`GitHubNotFound`, `RepoMeta`, `get_repo`, `branch_exists`, `get_file`) · `src/swf/store.py` (`ACTIVE_STATUSES`, `capacity_snapshot`, `Task.preflight`, `create_task` with status/reservations/preflight; no quota count for `rejected`) · `src/swf/api/app.py` (`AppDeps.preflight`; pre-flight and error mapping in `POST /v1/tasks`) · `src/swf/api/main.py` (wires `RegistryClient` + `PreflightService`) · `supabase/migrations/20261120000000_m2_preflight.sql` (new: `tasks.preflight jsonb`) · `seeded_repos/*/repo/AGENTS.md` ×10 (`setup` installs pytest via the proxy) · `pyproject.toml` + `uv.lock` (pin `mini-swe-agent==2.4.6`; pytest markers `docker`, `network`) · `tests/conftest.py`, `tests/helpers.py` (template-DB clones `db`/`fresh_db`, `FakeGitHub`, `FakeRegistry`, session `egress` fixture) · `tests/test_images.py`, `test_preflight.py`, `test_sandbox_unit.py`, `test_sandbox_docker.py`, `test_seeded_repos_container.py`, `test_store_capacity.py` (new) · `tests/test_api.py`, `test_tokens_github.py` (pre-flight integration, GitHub additions) · `docs/software-factory/m2-contract.md` (new).
+- Deferred: gVisor `--runtime runsc` → M8 (the `runtime` field exists, unset locally); 1-day package cache → M9; worker claim and admission with `SKIP LOCKED` → M4 (the M2 decision is advisory and is not a reservation); Linux workspace ownership (chown for uid 1000) → M6 clone (Docker Desktop bind mounts are writable by any uid).
+- Open risks → later milestones: importing mini-swe-agent loads `%LOCALAPPDATA%/mini-swe-agent/.env` into the backend (set `MSWEA_GLOBAL_CONFIG_DIR` to an empty dir and `MSWEA_SILENT_STARTUP=1` in the worker, M4); admission is not serialised (authoritative claim in M4); proxy sits on Docker's default bridge and a recreated proxy may get a new task-network IP (M8 hardening on the VM); `squid.conf` carries `umask 022` so the entrypoint can tail logs with all caps dropped.
 
 ### M3 — Command classifier + phase policy
-- [ ] Adversarial corpus tests (chaining, subshells, `eval`, `python -c`, heredocs, `rm -rf` variants, DB drops)
-- [ ] `swf.policy`
-- **DoD:** 0 forbidden bypasses on the corpus; unparseable → approval.
+- [x] Adversarial corpus tests (chaining, subshells, `eval`, `python -c`, heredocs, `rm -rf` variants, DB drops)
+- [x] `swf.policy`
+- **DoD:** 0 forbidden bypasses on the corpus; unparseable → approval. **Status 2026-11-20: done, awaiting review** (user: proceed without approval, review after M3). Corpus `tests/corpus/policy_commands.yaml`: 260 commands (185 forbid, 42 approve, 33 allow), **0 forbidden bypasses**; full suite 692 passed, 1 skipped; ruff, ruff format, mypy strict clean. A second bypass round found 13 real misses after the first green run (e.g. `cat < /dev/tcp/…` was `allow`, `bash -o errexit -c …`, `rm -{r,f}`, `env -S`, `git config --file … core.hooksPath`); all added to the corpus red-first and fixed. Mutation check on the classifier: 8/8 caught.
+- Decisions [D, 2026-11-20]: parser = tree-sitter-bash (MIT; pinned `tree-sitter==0.26.1`, `tree-sitter-bash==0.25.1`), not bashlex (GPL). Every simple command anywhere in the tree is checked; nested scripts (`bash -c`, `eval`, heredocs into shells, `find -exec`, `xargs`, `env -S`, wrappers) are analysed recursively; literal resolution covers quotes, escapes, `$'..'`, concatenation and variables assigned to literals in the same script; anything dynamic is never `allow`. Read-only phases = investigate, plan (writers → forbid). Forbidden beyond §12's list: `gh`, `/dev/tcp|udp`, container-runtime sockets, credential paths, proxy-variable changes, dangerous `git config` keys (remote/url/hooksPath/sshCommand/credential/alias/…). `rm -r` without force → approval (spec forbids `rm -rf` any form). Tool gate `check_tool(tool, phase)` implements the §12 table.
+- Files: `src/swf/policy.py` (new), `tests/test_policy.py`, `tests/corpus/policy_commands.yaml`, `pyproject.toml` (tree-sitter deps).
+- Known limits: runtime behaviour of programs (a Python script can still delete files) is invisible; the sandbox is the boundary. `python -c`/`node -e` are approval, with only a SQL-drop scan inside.
 
 ### M4 — WebAgent, tools, approvals, model switch, worker
 - [ ] Fake-model tests for every status transition, retries ≤ 3 → ask, idle-approval timeout, restart → interrupted
@@ -238,6 +246,7 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 ### M9 — Concurrency + evaluation (Oracle VM)
 - [ ] 10 seeded repos through the full pipeline; 2 concurrent tasks
 - **DoD:** wall time ≤ 1.25× single-task; resolve-rate drop ≤ 10%; results table.
+- Also built here: the 1-day pull-through package cache on the host, read-only to tasks (deferred from M2 [D, 2026-11-20]).
 
 ### M10 — Minimal web UI
 - [ ] Every spec §3 action works in the browser (manual checklist + screenshots)

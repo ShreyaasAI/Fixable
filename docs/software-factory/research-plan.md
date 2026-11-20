@@ -1,7 +1,7 @@
 # Web Coding Agent — Research Plan (v2)
 
 - **Purpose:** Record what is known, what must be validated, the architecture options with trade-offs, and the recommended minimal architecture and milestones for the MVP in the problem specification.
-- **Last updated:** 2026-11-19
+- **Last updated:** 2026-11-20
 - **Status:** Approved (v2, 2026-11-19, via the user's go-ahead to implement — supersedes v1)
 - **Related artifacts:** `docs/enterprise-agent/problem-specification.md` (v2, Approved — source of truth for scope) · `docs/software-factory/implementation-plan.md` (Under review) · `PROMPT.md` · `system_prompts/Cursor_*`
 
@@ -209,4 +209,4 @@ Web IDE (browser, editor, terminal) · cloud memory/preferences · Free/Pro plan
 
 Resolved 2026-11-19: quotas 5 tasks/day, $1/task, $3/day, 1 concurrent per user; zero-cost hosting = Oracle Always Free Arm (2 OCPU/12 GB, 2 concurrent tasks) + Supabase Free.
 
-Resolved 2026-11-19: open beta + abuse controls; OAuth user token; 4 GB / 2 vCPU per task on a 16 GB / 8 vCPU host; injection guard = `zai/glm-4.7-flash`.
+Resolved 2026-11-19: open beta + abuse controls; OAuth user token; 4 GB / 1 OCPU (= 1 vCPU on Arm) per task on the Oracle Always Free host (2 OCPU / 12 GB, 2 concurrent tasks; corrected 2026-11-20, user); injection guard = `zai/glm-4.7-flash`.

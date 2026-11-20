@@ -219,3 +219,25 @@ def test_deleting_task_removes_events_but_keeps_audit(
         ev_row, au_row = events.fetchone(), audit.fetchone()
     assert ev_row is not None and ev_row["n"] == 0
     assert au_row is not None and au_row["n"] == 1
+
+
+def test_list_tasks_newest_first_is_deterministic(
+    db: Database, make_user: Callable[..., FakeUser]
+) -> None:
+    """Tasks created in one transaction share now(); order must still follow creation."""
+    from swf import store
+
+    a = make_user()
+    with db.backend() as conn:
+        conn.execute("insert into profiles (user_id) values (%s)", [a.id])
+        ids = [
+            conn.execute(
+                "insert into tasks (user_id, repo, base_branch, description)"
+                " values (%s, 'o/r', 'main', %s) returning id",
+                [a.id, f"t{i}"],
+            ).fetchone()["id"]  # type: ignore[index]
+            for i in range(6)
+        ]
+    with db.as_user(a.claims()) as conn:
+        listed = [t.id for t in store.list_tasks(conn, a.id)]
+    assert listed == list(reversed(ids))
