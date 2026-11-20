@@ -19,7 +19,7 @@ import pytest
 from m4_fakes import FAILING_TEST, SEED_REPO, FakeChannel, run_agent
 
 from swf.agent.model import PhaseModel
-from swf.agent.web_agent import WebAgent
+from swf.agent.web_agent import AcceptAllEvidence, WebAgent
 from swf.config import load_agents_file
 from swf.egress import EgressConfig, EgressInfo
 from swf.sandbox import open_task_sandbox
@@ -67,6 +67,7 @@ def test_both_models_call_tools_in_one_conversation(
             model,
             env,
             channel=channel,
+            evidence=AcceptAllEvidence(),
             test_command=agents.config.test,
             allow=agents.config.allow,
             failing_test=FAILING_TEST,

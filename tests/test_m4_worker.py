@@ -41,6 +41,7 @@ from m4_fakes import (
 from minisweagent.exceptions import FormatError
 
 from swf import policy, store
+from swf.agent.web_agent import AcceptAllEvidence
 from swf.db import Database
 from swf.preflight import Limits, Reservation, fits
 from swf.worker import (
@@ -131,7 +132,7 @@ def make_rig(
     lease_seconds: int = 90,
     heartbeat_seconds: int = 30,
     max_concurrent: int = 2,
-    evidence: Any = None,
+    evidence: Any = AcceptAllEvidence(),  # noqa: B008 - explicit M4 opt-out (m5 §0.6)
 ) -> Rig:
     rig = Rig(deps=None, tracker=tracker or Tracker())  # type: ignore[arg-type]
     failures = {"left": start_failures}
@@ -169,8 +170,7 @@ def make_rig(
     if fake_time:
         rig.clock = FakeClock()
         extra = {"clock": rig.clock, "sleep": rig.clock.sleep}
-    if evidence is not None:
-        extra["evidence"] = evidence
+    extra["evidence"] = evidence
     rig.deps = RunnerDeps(
         db=db,
         workspaces=LocalCopyWorkspace(write_source(tmp_path, setup=setup), config.workspaces_root),
