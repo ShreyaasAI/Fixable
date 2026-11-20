@@ -3,7 +3,7 @@
 - **Purpose:** Record what is known, what must be validated, the architecture options with trade-offs, and the recommended minimal architecture and milestones for the MVP in the problem specification.
 - **Last updated:** 2026-11-20
 - **Status:** Approved (v2, 2026-11-19, via the user's go-ahead to implement — supersedes v1)
-- **Related artifacts:** `docs/enterprise-agent/problem-specification.md` (v2, Approved — source of truth for scope) · `docs/software-factory/implementation-plan.md` (Under review) · `PROMPT.md` · `system_prompts/Cursor_*`
+- **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — source of truth for scope) · `docs/software-factory/implementation-plan.md` (Under review) · `PROMPT.md` · `system_prompts/Cursor_*`
 
 Labels: **[D]** decision (from the spec) · **[V]** verified on 2026-11-19 · **[U]** unverified · **[P]** proposal awaiting approval.
 

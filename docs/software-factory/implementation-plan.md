@@ -3,7 +3,7 @@
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
 - **Last updated:** 2026-11-20
 - **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20)
-- **Related artifacts:** `docs/enterprise-agent/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
+- **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
 Labels: **[D]** confirmed decision · **[A]** assumption · **[Q]** open question. Nothing here goes beyond the approved spec; roadmap items are listed only as non-goals.
 

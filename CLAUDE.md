@@ -17,7 +17,7 @@ Work moves in approved **increments**: one milestone from `docs/software-factory
 ## Source-of-truth order
 
 1. The user's latest instruction.
-2. `docs/enterprise-agent/problem-specification.md` (scope).
+2. `docs/software-factory/problem-specification.md` (scope).
 3. `docs/software-factory/research-plan.md` (rationale).
 4. `docs/software-factory/implementation-plan.md` (build steps).
 

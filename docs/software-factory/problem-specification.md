@@ -60,7 +60,7 @@ The harness re-runs the target test once to confirm. The backend applies the dif
    - **Output:** Portkey guardrails apply regex matching and JSON schema validation to model output.
    - **On a flag:** tell the user and require approval before the next command.
 9. Models [D]:
-   - **Reasoning:** `opencode_go/beam-free` (investigate + plan).
+   - **Reasoning:** `baidu/ernie-5.5-flash-preview:free` (investigate + plan; replaced `opencode_go/beam-free`, user 2026-11-20).
    - **Tool execution:** `zai/glm-4.7-flash` (execute + verify).
    - **Gateway:** Portkey as the unified gateway.
 10. Evidence produced by the agent before any completion claim; the harness re-runs the target test once before the PR [D] (harness re-run proposed and not objected to).
