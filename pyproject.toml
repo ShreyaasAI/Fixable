@@ -40,7 +40,7 @@ addopts = "-q -rs"
 markers = [
     "docker: needs a working Docker daemon (auto-skipped, with a reason, when `docker info` fails)",
     "network: needs internet access (skipped when SWF_SKIP_NETWORK=1)",
-    "live: calls paid/free external models (skipped without PORTKEY_API_KEY)",
+    "live: calls external services (models or GitHub); each live test skips itself without its credentials",
 ]
 
 [tool.ruff]
