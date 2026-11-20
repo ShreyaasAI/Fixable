@@ -13,7 +13,7 @@ task that cannot run is rejected without cloning. Decisions [D, 2026-11-19/20]:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -115,6 +115,24 @@ def _image_warning(image: str, image_check: Callable[[str], bool]) -> PreflightW
         return PreflightWarning(code="registry_error", message=str(exc))
 
 
+def fits(
+    active: Sequence[Reservation],
+    r: Reservation,
+    limits: Limits = Limits(),  # noqa: B008 - frozen dataclass, safe as a default
+) -> bool:
+    """True if `r` can start next to `active`: a free slot, and memory and CPU left on the host.
+
+    `evaluate` (advisory, at creation) and `store.claim_next_task` (authoritative) share it.
+    """
+    used_mb = sum(x.memory_mb for x in active)
+    used_cpus = sum(x.cpus for x in active)
+    return (
+        len(active) < limits.max_concurrent
+        and used_mb + r.memory_mb <= limits.host_memory_mb
+        and used_cpus + r.cpus <= limits.host_cpus + _CPU_EPSILON
+    )
+
+
 def evaluate(
     facts: RepoFacts,
     capacity: Capacity,
@@ -199,14 +217,7 @@ def evaluate(
 
     # FIFO: tasks already waiting run before this one, so they count as demand too.
     demand = capacity.active + capacity.queued
-    used_mb = sum(r.memory_mb for r in demand)
-    used_cpus = sum(r.cpus for r in demand)
-    fits = (
-        len(demand) < limits.max_concurrent
-        and used_mb + memory_mb <= limits.host_memory_mb
-        and used_cpus + cpus <= limits.host_cpus + _CPU_EPSILON
-    )
-    if fits:
+    if fits(demand, Reservation(memory_mb, cpus), limits):
         return result("admit", image, memory_mb, cpus, warnings)
     position = max(1, len(demand) + 1 - limits.max_concurrent)
     busy = PreflightWarning(

@@ -2,7 +2,7 @@
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
 - **Last updated:** 2026-11-20
-- **Status:** Approved (user, 2026-11-19, together with M0). M1 built, awaiting review
+- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20)
 - **Related artifacts:** `docs/enterprise-agent/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
 Labels: **[D]** confirmed decision · **[A]** assumption · **[Q]** open question. Nothing here goes beyond the approved spec; roadmap items are listed only as non-goals.
@@ -80,9 +80,9 @@ There is no endpoint that pushes, merges, or chooses a branch name.
 ## 5. Agent orchestration
 
 - **Phases:** `prepare → investigate → plan → execute → verify → confirm → pr`.
-- **Model per phase [D]:** `opencode_go/beam-free` for investigate/plan; `zai/glm-4.7-flash` for execute/verify; all calls via Portkey.
+- **Model per phase [D, 2026-11-20]:** `baidu/ernie-5.5-flash-preview:free` for investigate/plan (Portkey wire `@baidu-ernie/baidu/ernie-5.5-flash-preview:free`; OpenRouter, often 429 upstream); `@glm-4-7-flash/glm-4.7-flash` (z-ai) for execute/verify. All calls via Portkey, through litellm `openai/<wire>`; no portkey-ai dependency.
 - **Loop:** mini-swe-agent `DefaultAgent.run`. `WebAgent.execute_actions` handles each tool call in order: phase policy → classifier → guard flags → (approval wait) → execute → input guard on the observation → event.
-- **Waiting:** an approval/question writes a row and blocks on Postgres LISTEN/poll; the answer re-enters as an observation via `InterruptAgentFlow`. Idle-approval timeout [Q: default 24 h] → `failed` with evidence so far.
+- **Waiting:** an approval/question writes a row and blocks on Postgres LISTEN/poll; the answer re-enters as an observation via `InterruptAgentFlow`. Idle-approval timeout [D: 24 h, 2026-11-20] → `failed` with evidence so far.
 - **Retries [D]:** a failing setup/test/infra step retries ≤ 3 times, then `ask_user`.
 - **Limits:** `step_limit`, `cost_limit` (from quota), `wall_time_limit_seconds`.
 - **Restart:** worker start marks orphaned `running` tasks `interrupted` and removes labelled containers.
@@ -210,7 +210,7 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - Decisions [D, 2026-11-20] (user): egress proxy = Squid, image `ubuntu/squid:6.6-24.04_edge` (multi-arch incl. arm64); only `squid.conf` is ours, `cache deny all`. The 1-day package cache is deferred to M9; M2 is allowlist only. An estimate above the per-task limit is rejected at creation: the task row is stored as `rejected` before any container starts, and it does not count toward the daily task quota (this is how M2 meets "over-threshold warning before start"). 1 vCPU per task (`--cpus 1`), 4 GB. Host capacity for admission: 2 concurrent tasks, 8192 MB, 2.0 CPUs (the 12 GB host keeps 4 GB for OS/API/worker/proxy). Registry allowlist as the SSRF guard, because `image:` comes from the user's repo: `registry-1.docker.io` (`docker.io`/`index.docker.io` normalise to it), `ghcr.io`, `quay.io`, `public.ecr.aws`, `mcr.microsoft.com`, `registry.gitlab.com`. Sandboxes get no external DNS (`--dns 127.0.0.1`) and reach the proxy by its IP on the internal network; Squid resolves names. Pre-flight runs inside `POST /v1/tasks` through the GitHub API (repo, branch, `AGENTS.md`), so the repo/branch access check moves from M6 to M2. Seeds' `setup` installs `pytest==9.2.0` through the proxy. Test runs set `PYTHONDONTWRITEBYTECODE=1` on the host and in the container.
 - Files: `src/swf/images.py` (new: image-ref parser, registry allowlist, anonymous manifest/platform lookup) · `src/swf/preflight.py` (new: `Limits`, pure `evaluate`, `PreflightService` over GitHub + registry + capacity) · `src/swf/sandbox.py` (new: `SandboxSpec`, hardened `docker run` args, `SandboxEnv(DockerEnvironment)` with synchronous cleanup, label-based `cleanup_orphans`) · `src/swf/egress.py` (new: `squid.conf` renderer, `ensure_egress`/`teardown_egress` for the internal network + proxy container) · `src/swf/github.py` (`GitHubNotFound`, `RepoMeta`, `get_repo`, `branch_exists`, `get_file`) · `src/swf/store.py` (`ACTIVE_STATUSES`, `capacity_snapshot`, `Task.preflight`, `create_task` with status/reservations/preflight; no quota count for `rejected`) · `src/swf/api/app.py` (`AppDeps.preflight`; pre-flight and error mapping in `POST /v1/tasks`) · `src/swf/api/main.py` (wires `RegistryClient` + `PreflightService`) · `supabase/migrations/20261120000000_m2_preflight.sql` (new: `tasks.preflight jsonb`) · `seeded_repos/*/repo/AGENTS.md` ×10 (`setup` installs pytest via the proxy) · `pyproject.toml` + `uv.lock` (pin `mini-swe-agent==2.4.6`; pytest markers `docker`, `network`) · `tests/conftest.py`, `tests/helpers.py` (template-DB clones `db`/`fresh_db`, `FakeGitHub`, `FakeRegistry`, session `egress` fixture) · `tests/test_images.py`, `test_preflight.py`, `test_sandbox_unit.py`, `test_sandbox_docker.py`, `test_seeded_repos_container.py`, `test_store_capacity.py` (new) · `tests/test_api.py`, `test_tokens_github.py` (pre-flight integration, GitHub additions) · `docs/software-factory/m2-contract.md` (new).
 - Deferred: gVisor `--runtime runsc` → M8 (the `runtime` field exists, unset locally); 1-day package cache → M9; worker claim and admission with `SKIP LOCKED` → M4 (the M2 decision is advisory and is not a reservation); Linux workspace ownership (chown for uid 1000) → M6 clone (Docker Desktop bind mounts are writable by any uid).
-- Open risks → later milestones: importing mini-swe-agent loads `%LOCALAPPDATA%/mini-swe-agent/.env` into the backend (set `MSWEA_GLOBAL_CONFIG_DIR` to an empty dir and `MSWEA_SILENT_STARTUP=1` in the worker, M4); admission is not serialised (authoritative claim in M4); proxy sits on Docker's default bridge and a recreated proxy may get a new task-network IP (M8 hardening on the VM); `squid.conf` carries `umask 022` so the entrypoint can tail logs with all caps dropped.
+- Open risks → later milestones: importing mini-swe-agent loads `%LOCALAPPDATA%/mini-swe-agent/.env` into the backend (set `MSWEA_GLOBAL_CONFIG_DIR` to an empty dir and `MSWEA_SILENT_STARTUP=1` in the worker, M4); admission is not serialised (authoritative claim in M4); proxy sits on Docker's default bridge and a recreated proxy may get a new task-network IP (M8 hardening on the VM); `squid.conf` carries `umask 022` so the entrypoint can tail logs with all caps dropped. **Resolved in M4 (2026-11-20):** `MSWEA_GLOBAL_CONFIG_DIR` and `MSWEA_SILENT_STARTUP` set in the worker; serialised admission replaced by an advisory lock + `FOR UPDATE SKIP LOCKED` in `claim_next_task`.
 
 ### M3 — Command classifier + phase policy
 - [x] Adversarial corpus tests (chaining, subshells, `eval`, `python -c`, heredocs, `rm -rf` variants, DB drops)
@@ -221,10 +221,19 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - Known limits: runtime behaviour of programs (a Python script can still delete files) is invisible; the sandbox is the boundary. `python -c`/`node -e` are approval, with only a SQL-drop scan inside.
 
 ### M4 — WebAgent, tools, approvals, model switch, worker
-- [ ] Fake-model tests for every status transition, retries ≤ 3 → ask, idle-approval timeout, restart → interrupted
-- [ ] `WebAgent`, `PhaseModel`, tools, worker queue (`SKIP LOCKED`), events
-- [ ] Live smoke test: one 2-model run via Portkey (RQ1/RQ2)
-- **DoD:** transition tests green; the smoke-run trajectory is attached.
+- [x] Fake-model tests for every status transition, retries ≤ 3 → ask, idle-approval timeout, restart → interrupted
+- [x] `WebAgent`, `PhaseModel`, tools, worker queue (`SKIP LOCKED`), events
+- [x] Live smoke test: one 2-model run via Portkey (RQ1/RQ2)
+- **DoD:** transition tests green; the smoke-run trajectory is attached. **Status 2026-11-20: done, approved (user, 2026-11-20)** (M4 tests 415 passed: `PYTHONDONTWRITEBYTECODE=1 uv run pytest -m "not live" tests/test_m4_*.py`, 123 s; full suite earlier 1105 passed, 1 skipped, 1 failed = M2 seed `10-clamp-upper-bound` pip ReadTimeout from files.pythonhosted.org, passes alone; ruff, ruff format, mypy strict clean; 0 Docker leftovers). Live smoke passed on the first attempt: exit Submitted; ernie 4 tool-call responses + glm 5; cost $0 for all 9 calls; phases investigate → plan approval → executing → verifying (auto switch) → complete_task. Trajectory `.m4-smoke/trajectory.json` (gitignored) contains no key. Built by 3 agents per the user: Opus planner (contract), Opus coder, Sonnet tester.
+- Contract: `docs/software-factory/m4-contract.md` (§12 amendments override §0–§11).
+- Decisions [D, user 2026-11-20]:
+  - Idle-approval/question timeout 24 h (resolves §19 Q1).
+  - No `start_verify` tool: the harness switches execute → verify on a passing `run_tests` covering the target after ≥ 1 edit since plan approval.
+  - Multi-worker: leases (`lease_expires_at`, `heartbeat_at`; 90 s lease, 30 s heartbeat); worker id from `SWF_WORKER_ID` or hostname; cleanup limited to own-labelled (`swf.worker`) or reaped tasks.
+  - Models changed: investigate/plan `baidu/ernie-5.5-flash-preview:free`; execute/verify `@glm-4-7-flash/glm-4.7-flash`; called through litellm `openai/<wire>` to Portkey's gateway; no portkey-ai dependency (§5).
+- Files: new `src/swf/{_mswea,states,worker}.py`, `src/swf/agent/{__init__,tools,model,channel,web_agent,prompts}.py`, `supabase/migrations/20261121000000_m4_agent.sql`; modified `src/swf/{__init__,store,sandbox,egress,preflight}.py`, `src/swf/api/app.py` (SSE `GET /v1/tasks/{id}/events`); tests `tests/m4_fakes.py`, `tests/test_m4_{states,mswea,tools,model,agent,store,worker,sse,sandbox_tools,live_smoke}.py`; `.gitignore` (+`.m4-smoke/`, `.env`, `.env.*`); pyproject `live` marker.
+- Security fixes: litellm's import-time `load_dotenv` loaded the main checkout's `.env` (Portkey + Supabase secret) into every backend process. `_mswea.isolate()` sets `LITELLM_MODE=PRODUCTION`, `MSWEA_GLOBAL_CONFIG_DIR` (empty dir), `MSWEA_SILENT_STARTUP=1`, `MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT=1`; regression test added. `SandboxEnv._check_finished` is a no-op, so the agent cannot forge submission via `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`. `.env` was not gitignored → added.
+- Deferred: `record_evidence` stub + accept-all `EvidenceGate` → M5; production `WorkspaceProvider` (clone) → M6 (`swf.worker.main` needs `SWF_LOCAL_SOURCE` until then). Known: importing `swf.sandbox` loads litellm (~8 s).
 
 ### M5 — Evidence + harness re-run + backstop
 - [ ] Tests: `complete_task` refused without the bundle; harness mismatch → failed; backstop catches a write in investigate
@@ -254,7 +263,7 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 
 ## 19. Open questions [Q]
 
-1. Idle-approval timeout default (proposed 24 h).
+1. ~~Idle-approval timeout default (proposed 24 h).~~ — resolved: 24 h [D, 2026-11-20].
 2. SSE (default) vs Supabase Realtime for live updates.
 3. Portkey free-plan guardrail availability (else in-process output checks).
 4. ~~Language mix of seeded repos~~ — resolved: Python only [D].

@@ -9,20 +9,26 @@ repo/branch, no push access, or a GitHub failure creates no row; a pre-flight re
 as a `rejected` task (shown to the user, not counted against the quota); admit/queue store a
 `queued` task with its reservation.
 
-Deferred: SSE events (M4), evidence (M5), task delete + workspace (M6),
+`GET /v1/tasks/{id}/events` (M4) streams the task's events as SSE: it polls the `events`
+table (no LISTEN/NOTIFY), resumes after `Last-Event-ID` (or `?after=`), sends a `: ping`
+comment when idle, and ends once the task is terminal and every event has been sent.
+
+Deferred: evidence (M5), task delete + workspace (M6),
 quota enforcement / rate limits / kill switch (M8).
 """
 
+import json
 import re
+import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from swf import store
@@ -54,6 +60,8 @@ class AppDeps:
     github: GitHubClient
     preflight: PreflightService
     clock: Callable[[], datetime] = _utcnow
+    sse_poll_seconds: float = 1.0
+    sse_keepalive_seconds: float = 15.0
 
     def today(self) -> date:
         return self.clock().astimezone(UTC).date()
@@ -292,6 +300,60 @@ def create_app(
         if task is None:
             raise store.NotFound
         return task
+
+    @app.get("/v1/tasks/{task_id}/events")
+    def events(
+        user: User,
+        task_id: uuid.UUID,
+        after: int = -1,
+        last_event_id: Annotated[str | None, Header()] = None,
+    ) -> StreamingResponse:
+        with deps.db.as_user(user.principal.claims) as conn:
+            if store.get_task(conn, user.id, task_id) is None:
+                raise store.NotFound
+        cursor = after
+        if last_event_id is not None and last_event_id.strip():
+            try:
+                cursor = int(last_event_id.strip())
+            except ValueError:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid_last_event_id") from None
+        claims = user.principal.claims
+        user_id = user.id
+
+        def stream() -> Iterator[str]:
+            sent = cursor
+            last_output = time.monotonic()
+            while True:
+                with deps.db.as_user(claims) as conn:
+                    row = conn.execute(
+                        "select status, event_seq from public.tasks where id = %s and user_id = %s",
+                        [task_id, user_id],
+                    ).fetchone()
+                    batch = store.list_events(conn, user_id, task_id, after_seq=sent)
+                if row is None:
+                    return
+                for event in batch:
+                    data = {**event.payload, "created_at": event.created_at.isoformat()}
+                    yield (
+                        f"id: {event.seq}\nevent: {event.type}\n"
+                        f"data: {json.dumps(data, default=str)}\n\n"
+                    )
+                    sent = event.seq
+                    last_output = time.monotonic()
+                if row["status"] in store.TERMINAL_STATUSES and sent >= row["event_seq"] - 1:
+                    return
+                if batch and len(batch) >= 500:
+                    continue  # more queued up; no sleep
+                if time.monotonic() - last_output >= deps.sse_keepalive_seconds:
+                    yield ": ping\n\n"
+                    last_output = time.monotonic()
+                time.sleep(deps.sse_poll_seconds)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/v1/tasks/{task_id}/approvals/{approval_id}")
     def decide(

@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 LABEL_MANAGED = "swf.managed"
 LABEL_TASK = "swf.task"
+LABEL_WORKER = "swf.worker"  # the worker that started the task (multi-worker cleanup, M4)
 LABEL_EGRESS = "swf.egress"
 LABEL_CONF_SHA = "swf.egress.conf-sha256"
 SQUID_IMAGE = (
@@ -39,6 +40,7 @@ SQUID_CONF_PATH = "/etc/squid/squid.conf"
 READY_LINE = "Accepting HTTP Socket connections"
 READY_TIMEOUT_SECONDS = 30.0
 _DOCKER_TIMEOUT_SECONDS = 120
+_WORKER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _DOMAIN_RE = re.compile(r"^\.?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 # Squid starts as root and drops to the `proxy` user: it needs SETUID/SETGID, nothing else.
 _PROXY_HARDENING = (
@@ -231,15 +233,24 @@ def task_network_name(cfg: EgressConfig, task_id: str) -> str:
     return f"{cfg.network_prefix}{task_id}"
 
 
-def attach_task_network(cfg: EgressConfig, task_id: str, *, docker: str = "docker") -> TaskNetwork:
-    """Create (or reuse) the task's internal network and connect the proxy to it."""
+def attach_task_network(
+    cfg: EgressConfig, task_id: str, *, worker_id: str | None = None, docker: str = "docker"
+) -> TaskNetwork:
+    """Create (or reuse) the task's internal network and connect the proxy to it.
+
+    With `worker_id`, the network is labelled `swf.worker=<id>` like the task's sandbox.
+    """
+    if worker_id is not None and not _WORKER_ID_RE.fullmatch(worker_id):
+        raise ValueError(f"invalid worker id {worker_id!r}")
     name = task_network_name(cfg, task_id)
     net = _inspect(docker, "network", name)
     if net is None:
+        worker_label = [] if worker_id is None else ["--label", f"{LABEL_WORKER}={worker_id}"]
         create = _docker(
             docker, "network", "create", "--internal",
             "--label", f"{LABEL_MANAGED}=1",
             "--label", f"{LABEL_TASK}={task_id}",
+            *worker_label,
             name,
             check=False,
         )  # fmt: skip

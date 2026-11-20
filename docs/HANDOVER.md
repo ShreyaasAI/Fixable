@@ -13,23 +13,25 @@
 | Implementation plan | **Approved** (user, 2026-11-19) |
 | M0 skeleton, `AGENTS.md` loader, 10 seeded repos | **Approved** (user, 2026-11-19) |
 | M1 data model, RLS, API skeleton, auth, audit | **Approved** (user, 2026-11-20); committed in `e2a9863` |
-| M2 sandbox, egress proxy, pre-flight | **Built, awaiting user review**. 405 passed incl. docker/network + 10 seeds in the sandbox; 9/9 security mutations caught. Contract: `docs/software-factory/m2-contract.md` |
-| M3 command classifier + phase policy | **Built, awaiting user review**. Corpus 260 cmds, 0 forbidden bypasses; full suite 692 passed, 1 skipped; ruff/format/mypy clean |
-| M4–M10 | Not started |
+| M2 sandbox, egress proxy, pre-flight | **Built, committed `1296b28` on `feature/m2-sandbox-preflight-1120a`**, user said complete (2026-11-20). Contract: `docs/software-factory/m2-contract.md` |
+| M3 command classifier + phase policy | **Built, committed `1296b28` on `feature/m2-sandbox-preflight-1120a`**, user said complete (2026-11-20). Corpus 260 cmds, 0 forbidden bypasses |
+| M4 WebAgent, tools, approvals, model switch, worker | **Approved (user, 2026-11-20), committed on the feature branch**. 415 M4 tests passed; live 2-model Portkey smoke passed ($0); contract `docs/software-factory/m4-contract.md` |
+| M5–M10 | Not started |
 
-Repo state: `main` holds one local commit, `e2a9863` ("M0 + M1: …", 98 files). `origin` is not configured (the GitHub repo `https://github.com/ShreyaasAI/Fixable.git` is not a remote), and nothing is pushed. **Do not push until M9 is complete** (user). M2 lives only in the worktree above, branched from local `main`; a new session must work there (or ask the user), not on `main`. Docker Desktop is running on the dev machine (x86_64).
+Repo state: M2 + M3 committed as `1296b28` on `feature/m2-sandbox-preflight-1120a` (worktree `.claude/worktrees/m2-sandbox-preflight-1120a`); M4 committed there too. `main` still at `e2a9863` ("M0 + M1: …", 98 files). `origin` is not configured (the GitHub repo `https://github.com/ShreyaasAI/Fixable.git` is not a remote), and nothing is pushed. **Do not push until M9 is complete** (user). A new session must work in the worktree (or ask the user), not on `main`. Docker Desktop is running on the dev machine (x86_64).
+
+**Warning:** the main checkout's `.env` is untracked and not ignored on `main` until this branch merges. Never `git add -A` on `main`.
 
 ## Waiting on the user
 
-The user said (2026-11-20): build M3 without asking for approval and review after M3. Pending now:
-1. Review and approve **M2 and M3** (evidence in implementation-plan §18).
-2. Whether to commit M2 + M3 on the feature branch and merge into `main` (nothing committed since `e2a9863`; no push before M9).
+Pending now:
+1. Whether to merge `feature/m2-sandbox-preflight-1120a` (M2–M4) into `main` (no push before M9).
 
 Settled: the Supabase Free project is created in M8 (local Postgres until then); the GitHub token comes in via `POST /v1/me/github-token`; the M2 decisions (Squid proxy, package cache deferred to M9, over-limit estimates rejected at creation, 1 vCPU / 4 GB per task) are in `m2-contract.md` §0.
 
 ## Next action
 
-Wait for the user's review of M2 + M3. After approval: commit, then **M4** (WebAgent, tools, approvals, model switch, worker) from implementation-plan §18; M4 must also apply the M2 open risks listed there (`MSWEA_GLOBAL_CONFIG_DIR`, serialised admission).
+M4 approved and committed (user, 2026-11-20). Start **M5** (evidence + harness re-run + backstop) from implementation-plan §18, replacing the M4 `record_evidence` stub and `AcceptAllEvidence` gate.
 
 ## Reading guide
 
@@ -41,6 +43,7 @@ Read by need, not front to back:
 | Why a design was chosen; mini-swe-agent facts; options rejected | `docs/software-factory/research-plan.md` — §2 verified facts, §6 security, §7 options, §8 architecture |
 | What to build next, how, and its definition of done | `docs/software-factory/implementation-plan.md` — §18 milestones (checkboxes = progress), §3 components, §4 API, §9 data model, §12 tools/permissions |
 | M2 interfaces, decisions and amendments (working contract) | `docs/software-factory/m2-contract.md` — §0 decisions; §9 amendments override §1–§8 |
+| M4 interfaces and amendments (working contract) | `docs/software-factory/m4-contract.md` — §12 amendments override §0–§11 |
 | The original process rules from the user | `PROMPT.md` |
 | Baseline for the agent's system prompt | `system_prompts/Cursor_*` (adapt the behavioural rules; the tool schemas don't apply) |
 
