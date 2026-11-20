@@ -2,13 +2,13 @@
 
 - **Purpose:** The interface contract for the parallel M5 build. The coder implements it, the tester tests it, the checker verifies both against it. If something here is wrong, report it; do not silently diverge.
 - **Last updated:** 2026-11-20
-- **Status:** Draft, awaiting user approval of §0 items marked **[A, needs user OK]**. Branch `feature/m5`, on top of `87a3231` (M4 + its §12 amendments are the baseline).
+- **Status:** Approved with amendments (user, 2026-11-20); §12 overrides §0–§8. Branch `feature/m5`, on top of `87a3231` (M4 + its §12 amendments are the baseline).
 - Sources: plan §13 (bundle, harness confirmation, backstop), §18 M5; spec §1.3, §8 (read-only row), §9 steps 3/6/7, §10 criteria 1–3, §11 (failed with partial evidence); m4-contract §0.5, §12 A1.
 
-## Decisions needing user approval (summary)
+## Decisions approved by the user (2026-11-20; #2 changed, see §12 A1)
 
 1. §0.1 The harness runs the baseline itself (target + full suite) at the end of `preparing`; a passing baseline fails the task.
-2. §0.2 Backstop response = `failed("readonly_violation")`, not an approval.
+2. §0.2 Backstop response → **changed**: an approval (§12 A1); rejected → `failed("readonly_violation")`.
 3. §0.3 Post/suite evidence comes only from the agent's real `run_tests` results in execute/verify, pinned to a workspace digest.
 4. §0.4 No `failing_test` → the target is the whole suite.
 5. §0.6 Secure defaults: completion is refused unless a harness (or an explicit `AcceptAllEvidence`) is wired; M4 tests opt out explicitly (tester edits 3 M4 test files).
@@ -16,17 +16,17 @@
 
 ## 0. Decisions and assumptions
 
-1. [A, needs user OK] **Baseline is run by the harness, not the agent.** After the AGENTS.md `setup` commands and before `investigating`, the harness runs (a) the target test and (b) the full AGENTS.md suite, each once, through `harness_command` (§2). Rows `baseline` and `baseline_suite`, source `harness`. Target exit code 0 → `failed("baseline_not_reproduced")` before any model call (spec §11: no speculative fix). No AGENTS.md test command → `failed("no_test_command")`. Infra failure (rc −1 / `exception_info`) → the M4 §0.2 retry path (`_with_retries("baseline", …)`, system question, back to `preparing`).
-2. [A, needs user OK] **Backstop response = fail (safer than approval).** Snapshot S0 of the host workspace (`ws.repo`) right after the baseline, i.e. at investigate start. At **every** `submit_plan` (before validation, before any approval row), a new snapshot is compared to S0; any added/removed/modified path → event `backstop_violation`, exit `ReadOnlyViolation` → `failed("readonly_violation")`. No plan approval is created. Spec §8 "blocked, flagged" = terminal block + event + `tasks.error`. An approval would let a user accept an unplanned write; failing cannot.
-3. [A, needs user OK] **Evidence is recorded by the harness, never from agent text.** Every `run_tests` result in phase `execute` or `verify` (not infra failures) that covers the target or has no selector becomes an `agent_run` row (kind `suite` without a selector, else `post`; `covers_target` stored; see §2 `record_run`). Each row stores the workspace digest taken **after** the run. Only rows whose digest equals the digest at `complete_task` count, so any later write (any tool, any bash) invalidates them. `record_evidence` writes **no** row (§0.7).
-4. [A, needs user OK] `task.failing_test is None` → the target is the whole suite: baseline = one suite run recorded as both `baseline` and `baseline_suite` (`details.shared_run = true`); post = a passing run with no selector.
-5. [D] Harness confirmation in `confirming` (plan §13): re-run the target once via `harness_command` (caches cleared, `PYTHONDONTWRITEBYTECODE=1`), row `harness_rerun`. Exit ≠ 0, or the workspace digest differs from the one the gate accepted → `failed("harness_mismatch: …")` with event `harness_discrepancy`. [A] Infra failure: ≤ `max_retries` attempts with backoff, then `failed("harness_rerun_error")`; no retry question (there is no `confirming ↔ awaiting_input` edge, and §2 of m4 stays unchanged).
-6. [A, needs user OK] **Secure defaults.** `WebAgent(evidence=None)` now uses `RefuseAllEvidence` (completion always refused). `RunnerDeps.evidence: EvidenceGate | None = None`; `None` → the runner builds a `TaskHarness` per task (production path, `main()` unchanged). `AcceptAllEvidence` stays as an explicit opt-out (no baseline, no backstop, no re-run: M4 behaviour). So M4 tests that complete tasks must pass `AcceptAllEvidence()`: the tester edits `tests/m4_fakes.py` (`make_agent` default), `tests/test_m4_worker.py` (rig default), `tests/test_m4_live_smoke.py` (the `WebAgent(...)` call), opt-out lines only.
+1. [D user 2026-11-20] **Baseline is run by the harness, not the agent.** After the AGENTS.md `setup` commands and before `investigating`, the harness runs (a) the target test and (b) the full AGENTS.md suite, each once, through `harness_command` (§2). Rows `baseline` and `baseline_suite`, source `harness`. Target exit code 0 → `failed("baseline_not_reproduced")` before any model call (spec §11: no speculative fix). No AGENTS.md test command → `failed("no_test_command")`. Infra failure (rc −1 / `exception_info`) → the M4 §0.2 retry path (`_with_retries("baseline", …)`, system question, back to `preparing`).
+2. [Superseded by §12 A1: approval, not fail] **Backstop response = fail (original proposal).** Snapshot S0 of the host workspace (`ws.repo`) right after the baseline, i.e. at investigate start. At **every** `submit_plan` (before validation, before any approval row), a new snapshot is compared to S0; any added/removed/modified path → event `backstop_violation`, exit `ReadOnlyViolation` → `failed("readonly_violation")`. No plan approval is created. Spec §8 "blocked, flagged" = terminal block + event + `tasks.error`. An approval would let a user accept an unplanned write; failing cannot.
+3. [D user 2026-11-20] **Evidence is recorded by the harness, never from agent text.** Every `run_tests` result in phase `execute` or `verify` (not infra failures) that covers the target or has no selector becomes an `agent_run` row (kind `suite` without a selector, else `post`; `covers_target` stored; see §2 `record_run`). Each row stores the workspace digest taken **after** the run. Only rows whose digest equals the digest at `complete_task` count, so any later write (any tool, any bash) invalidates them. `record_evidence` writes **no** row (§0.7).
+4. [D user 2026-11-20] `task.failing_test is None` → the target is the whole suite: baseline = one suite run recorded as both `baseline` and `baseline_suite` (`details.shared_run = true`); post = a passing run with no selector.
+5. [D] Harness confirmation in `confirming` (plan §13): re-run the target once via `harness_command` (caches cleared, `PYTHONDONTWRITEBYTECODE=1`), row `harness_rerun`. Exit ≠ 0, or the workspace digest differs from the one the gate accepted → `failed("harness_mismatch: …")` with event `harness_discrepancy`. [D user 2026-11-20] Infra failure: ≤ `max_retries` attempts with backoff, then `failed("harness_rerun_error")`; no retry question (there is no `confirming ↔ awaiting_input` edge, and §2 of m4 stays unchanged).
+6. [D user 2026-11-20] **Secure defaults.** `WebAgent(evidence=None)` now uses `RefuseAllEvidence` (completion always refused). `RunnerDeps.evidence: EvidenceGate | None = None`; `None` → the runner builds a `TaskHarness` per task (production path, `main()` unchanged). `AcceptAllEvidence` stays as an explicit opt-out (no baseline, no backstop, no re-run: M4 behaviour). So M4 tests that complete tasks must pass `AcceptAllEvidence()`: the tester edits `tests/m4_fakes.py` (`make_agent` default), `tests/test_m4_worker.py` (rig default), `tests/test_m4_live_smoke.py` (the `WebAgent(...)` call), opt-out lines only.
 7. [D] `record_evidence` keeps its M4 schema (no tool/policy change). With a harness it returns `TaskHarness.status_text()` (rc 0) and emits `evidence_note {kind, note, command}` (untrusted agent text, not a row). Without one (opt-out) it keeps the M4 stub behaviour.
-8. [A, needs user OK] Diff: at S0 the harness copies `ws.repo` to `ws.root/baseline/` (same ignore set, symlinks copied as links). The diff is `unified_diff(baseline, repo)` (difflib, git-style headers). M6 may switch to `git diff --binary` once workspaces are clones.
+8. [D user 2026-11-20] Diff: at S0 the harness copies `ws.repo` to `ws.root/baseline/` (same ignore set, symlinks copied as links). The diff is `unified_diff(baseline, repo)` (difflib, git-style headers). M6 may switch to `git diff --binary` once workspaces are clones.
 9. [D] Snapshots are host-side (`os.walk(followlinks=False)`, `lstat`): no container dependency, the agent cannot tamper with the hashing, works with `FakeEnv`. Ignored: directories `.git`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`; files ending `.pyc`/`.pyo`. [A] Mode bits are not compared (unreliable on the Windows dev host). Known limit: a write reverted before `submit_plan` is invisible (the classifier is the primary control).
 10. [D] Stale-bytecode lesson (M0): every harness test run uses `HARNESS_PREAMBLE` (exports `PYTHONDONTWRITEBYTECODE=1`, deletes `__pycache__` dirs and `.pytest_cache` under `/repo`). Agent `run_tests` keep the M4 command (the container already sets `PYTHONDONTWRITEBYTECODE=1`); the re-run is the arbiter. Host-side test runs keep `PYTHONDONTWRITEBYTECODE=1` (CLAUDE.md).
-11. [A] Suite rule "no new failures vs baseline": the latest current-digest suite run exits 0, **or** its parsed failure ids are non-empty and ⊆ the baseline suite's. A failing suite whose failures cannot be parsed → refused (`suite_unparsed`). Parsing = pytest short-summary lines (`FAILED <id>` / `ERROR <id>`, id ends at ` - ` or end of line); all 10 seeds are pytest. A post run must exit 0 (a selector run, or a no-selector run that exits 0).
+11. [D user 2026-11-20] Suite rule "no new failures vs baseline": the latest current-digest suite run exits 0, **or** its parsed failure ids are non-empty and ⊆ the baseline suite's. A failing suite whose failures cannot be parsed → refused (`suite_unparsed`). Parsing = pytest short-summary lines (`FAILED <id>` / `ERROR <id>`, id ends at ` - ` or end of line); all 10 seeds are pytest. A post run must exit 0 (a selector run, or a no-selector run that exits 0).
 12. [D] DB rows keep the **tail** of test output (≤ `output_limit` = 16000 chars) and the **head** of the diff; full text goes to `ws.root/evidence/<NNN>-<kind>.txt|.patch`; `output_ref` is that path **relative to `ws.root`** (never a host absolute path in the API).
 13. [D] `GET /v1/tasks/{id}/evidence` (deferred from M1): `as_user` + RLS (`evidence_select_own` from M1); another user's task → 404.
 
@@ -230,3 +230,51 @@ M1 grants (authenticated: SELECT) and `evidence_select_own` cover the new column
 - **Checker:** owns nothing; reports contract deviations, runs ruff, ruff format check, mypy strict, the M4 + M5 suites and a mutation pass on the gate, backstop and re-run.
 - **Planner:** `docs/` (this file; plan §18 M5 status and HANDOVER at close).
 - Rules as m4 §11: work only in your own worktree; no push; LF endings (`newline="\n"`); no `uv add`; Docker names `swf-test-*` / `swf-coder-*`; mypy strict and ruff clean.
+
+## 12. Amendments (user 2026-11-20) — override §0–§8
+
+All §0 items are **[D user 2026-11-20]** as written, except §0.2, which A1 replaces.
+
+### A1 Backstop → approval, not fail (replaces §0.2 and the `_submit_plan` bullet in §4)
+
+- **Flow at every `submit_plan`** (before plan validation):
+  1. `report = harness.check_readonly()`; clean iff all `counts` are 0 → step 6.
+  2. `emit("backstop_violation", report)`.
+  3. `approval_id = request_approval("readonly_violation", {**report, "diff": <head ≤ 4000 chars of unified_diff(baseline copy, repo)>, "diff_truncated": bool})`. This happens before any plan approval, and there is at most one pending approval per task (M4 index).
+  4. `transition("awaiting_command_approval")`, then wait (M4 `_wait_approval`: 24 h idle timeout → approval `expired`, `ApprovalTimeout` → `failed("approval_timeout")`), then `transition("investigating")`. **No new state edge:** `investigating → awaiting_command_approval → investigating` is already in the m4 §2 table.
+  5. Rejected → raise `ReadOnlyViolation` → `failed("readonly_violation")` (no plan approval). Approved → `harness.rebaseline()` (wrapped in `WebAgent._with_retries("baseline", …)`, so a `HarnessInfraError` follows the M4 retry/system-question path and returns to `investigating`). Then continue.
+  6. The normal M4 plan path: validate `Plan`, plan approval, and so on.
+- **[A] Re-baseline after approval** (`TaskHarness.rebaseline() -> None`, also added to the `EvidenceHarness` protocol): re-runs `run_baseline()` on the current workspace, writing new `baseline`/`baseline_suite` rows with `details.rebaseline = true`, which replace the in-memory baseline. Then it calls `take_start_snapshot()` again (new S0 and a new `baseline/` copy) and emits `backstop_rebaseline {digest, files, approval_id}`. Effects:
+  - The changes the user accepted are part of the base, so they never count as the agent's fix and do not appear in the diff evidence. M6 builds the PR from this diff.
+  - If the accepted change already makes the target pass, `BaselineNotReproduced` ends the task: `failed("baseline_not_reproduced")`. This stops a fix made in investigate from being accepted through the backstop.
+  - Later `submit_plan` calls compare against the new S0.
+- `check_readonly()` payload = `SnapshotDiff.as_payload()` (§2). The diff text is computed only when a violation is found.
+- `store.ApprovalKind` gains `"readonly_violation"`. The approval API is unchanged (submitter only, 409 on expired or decided).
+- **Migration addition** (in `20261122000000_m5_evidence.sql`):
+```sql
+alter table public.approvals drop constraint approvals_kind_check;
+alter table public.approvals add constraint approvals_kind_check
+  check (kind in ('plan', 'command', 'guard_flag', 'readonly_violation'));
+```
+- The `ReadOnlyViolation` exit and the `readonly_violation` error now mean the user **rejected** the change.
+- `prompts.SYSTEM_TEMPLATE`: "any change in investigate is shown to the user for approval; if rejected the task fails".
+
+### A2 Test-table changes (override §7)
+
+- `test_m5_agent.py` backstop cases replace the old ones:
+  - a write in investigate leads to `backstop_violation`, then an approval of kind `readonly_violation` whose payload lists the path and contains a diff. Status sequence `investigating → awaiting_command_approval → investigating`. No `plan` approval is requested before the decision.
+  - **rejected** → `ReadOnlyViolation`, and no plan approval.
+  - **approved** → new baseline rows (`rebaseline`), a new start digest, then the plan approval. The final diff excludes the accepted file, and completion still needs post/suite evidence for the agent's own fix.
+  - **approved, but the accepted change makes the target pass** → `BaselineNotReproduced`.
+  - **timeout** (FakeClock, 24 h) → approval `expired`, `ApprovalTimeout`.
+  - a clean investigate → no `readonly_violation` approval.
+  - a second violation after re-baselining → a second approval.
+- `test_m5_harness.py`: `rebaseline()` rows, digest and event; `check_readonly` payload counts.
+- `test_m5_worker.py`: rejected → `failed("readonly_violation")` with partial evidence kept; approved → `completed`, with the `diff` row excluding the accepted file; timeout → `failed("approval_timeout")`.
+- `test_m5_store_api.py`: the `approvals` kind constraint accepts `readonly_violation` and rejects unknown kinds; deciding one through `POST /v1/tasks/{id}/approvals/{approval_id}` works for the submitter only.
+- `test_m5_e2e.py`: the real-Docker backstop case uses `AutoDecider` rejecting `readonly_violation` → `failed("readonly_violation")`. Optionally add an approve variant on seed 02 that ends `completed`.
+
+### A3 Ownership (restates §8)
+
+- **Tester** explicitly owns: `tests/test_m5_*.py`, `tests/m5_fakes.py`, `pyproject.toml [tool.pytest.ini_options]` markers, and the §0.6 opt-out edits in `tests/m4_fakes.py`, `tests/test_m4_worker.py`, `tests/test_m4_live_smoke.py` (passing `AcceptAllEvidence()` only).
+- **Coder**: unchanged from §8 (the migration and `store.py` already include A1's additions).
