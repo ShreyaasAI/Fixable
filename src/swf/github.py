@@ -1,7 +1,8 @@
 """Minimal GitHub REST client using the user's OAuth token (backend only).
 
 M1: identify the token's owner and list repos. M2: repo metadata, branch check and `AGENTS.md`
-contents for pre-flight (this is also the repo/branch access check). Clone/push/PR arrive in M6.
+contents for pre-flight (this is also the repo/branch access check). M6: open a pull request
+(`create_pull`); there is deliberately no endpoint that changes a PR after it is opened.
 The token is only ever sent to the configured API host; pagination links pointing elsewhere are
 refused and redirects are never followed.
 """
@@ -32,8 +33,18 @@ class GitHubNotFound(GitHubError):
     """404: the resource does not exist or the token cannot see it (GitHub does not say which)."""
 
 
+class GitHubUnprocessable(GitHubError):
+    """422: for example "a pull request already exists"."""
+
+
 class GitHubFileTooLarge(GitHubError):
     """`get_file` target is over MAX_FILE_BYTES; the message is shown to the user."""
+
+
+@dataclass(frozen=True)
+class PullRequest:
+    number: int
+    html_url: str
 
 
 @dataclass(frozen=True)
@@ -68,8 +79,10 @@ class GitHubClient:
         transport: httpx.BaseTransport | None = None,
         max_pages: int = 10,
         timeout_seconds: float = 15.0,
+        html_base: str = "https://github.com/",
     ) -> None:
         self._base = httpx.URL(base_url)
+        self._html_base = html_base
         self._transport = transport
         self._max_pages = max_pages
         self._timeout = timeout_seconds
@@ -177,6 +190,31 @@ class GitHubClient:
             return raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise GitHubError(f"{path} is not UTF-8 text") from exc
+
+    def create_pull(
+        self, token: str, full_name: str, *, head: str, base: str, title: str, body: str
+    ) -> PullRequest:
+        """Open a ready-for-review PR (m6 §3)."""
+        payload = {
+            "title": title,
+            "head": head,
+            "base": base,
+            "body": body,
+            "draft": False,
+            "maintainer_can_modify": False,
+        }
+        with self._client(token) as client:
+            resp = client.post(f"/repos/{quote(full_name, safe='/')}/pulls", json=payload)
+        if resp.status_code == 404:
+            raise GitHubNotFound(f"repository {full_name} not found")
+        if resp.status_code == 422:
+            raise GitHubUnprocessable(f"GitHub refused the pull request (422) for {full_name}")
+        self._check(resp)
+        data = resp.json()
+        html_url = str(data.get("html_url") or "")
+        if not html_url.startswith(self._html_base):
+            raise GitHubError("pull request html_url is not on the expected host")
+        return PullRequest(number=int(data["number"]), html_url=html_url)
 
 
 def _repo(item: dict[str, Any]) -> Repo:

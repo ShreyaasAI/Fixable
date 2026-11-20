@@ -50,12 +50,14 @@ __all__ = [
     "Snapshot",
     "SnapshotDiff",
     "TaskHarness",
+    "UnsupportedChange",
     "bundle_problems",
     "copy_tree",
     "covers_target",
     "diff_snapshots",
     "harness_command",
     "parse_failures",
+    "pr_patch",
     "take_snapshot",
     "unified_diff",
 ]
@@ -292,6 +294,68 @@ def unified_diff(base: Path, repo: Path) -> str:
             continue
         parts.append(_file_diff(rel, old_file, new_file))
     return "".join(parts)
+
+
+class UnsupportedChange(Exception):
+    """A change `pr_patch` cannot carry into a PR (m6 §0.6); the PR fails visibly."""
+
+    def __init__(
+        self, path: str, reason: Literal["binary", "symlink", "special", "git_dir"]
+    ) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.path = path
+        self.reason = reason
+
+
+def _pr_file_patch(rel: str, old: Path | None, new: Path | None) -> str:
+    old_text = "" if old is None else _text(old)
+    new_text = "" if new is None else _text(new)
+    if old_text is None or new_text is None:
+        raise UnsupportedChange(rel, "binary")
+    out = [f"diff --git a/{rel} b/{rel}\n"]
+    if old is None:
+        out.append("new file mode 100644\n")
+    elif new is None:
+        out.append("deleted file mode 100644\n")
+    hunks = difflib.unified_diff(
+        old_text.splitlines(keepends=True),
+        new_text.splitlines(keepends=True),
+        fromfile="/dev/null" if old is None else f"a/{rel}",
+        tofile="/dev/null" if new is None else f"b/{rel}",
+    )
+    for line in hunks:  # an empty added/removed file has no hunks: header only
+        out.append(line)
+        if not line.endswith("\n"):
+            out.append("\n\\ No newline at end of file\n")
+    return "".join(out)
+
+
+def pr_patch(base: Path, repo: Path) -> str:
+    """A `git apply`-able patch from `base` to `repo` (m6 §5); "" if nothing changed.
+
+    Raises `UnsupportedChange` for binary files, symlinks, special files, `.git` components
+    and paths with a tab or newline: these are never silently dropped.
+    """
+    base, repo = Path(base), Path(repo)
+    changed = diff_snapshots(take_snapshot(base), take_snapshot(repo)).paths()
+    plan: list[tuple[str, Path | None, Path | None]] = []
+    for rel in changed:
+        if any(part.lower() == ".git" for part in rel.split("/")):
+            raise UnsupportedChange(rel, "git_dir")
+        if "\t" in rel or "\n" in rel or "\r" in rel:
+            raise UnsupportedChange(rel, "special")
+        old_path, new_path = base / rel, repo / rel
+        kinds = (_entry_kind(old_path), _entry_kind(new_path))
+        if "link" in kinds:
+            raise UnsupportedChange(rel, "symlink")
+        if "other" in kinds:
+            raise UnsupportedChange(rel, "special")
+        old_file = old_path if kinds[0] == "file" else None
+        new_file = new_path if kinds[1] == "file" else None
+        if old_file is None and new_file is None:
+            continue
+        plan.append((rel, old_file, new_file))
+    return "".join(_pr_file_patch(rel, old, new) for rel, old, new in plan)
 
 
 # --- rules ---------------------------------------------------------------------------------
@@ -568,6 +632,7 @@ class TaskHarness:
         self.checked_digest: str | None = None
         self.baseline: EvidenceRecord | None = None
         self.baseline_suite: EvidenceRecord | None = None
+        self.rerun: EvidenceRecord | None = None
         self.runs: list[EvidenceRecord] = []
         self._run_ids: list[int] = []
         self._start: Snapshot | None = None
@@ -846,6 +911,7 @@ class TaskHarness:
             },
         )
         evidence_id = self.sink.add(record)
+        self.rerun = record
         self.channel.emit(
             "harness_rerun",
             {"evidence_id": evidence_id, "exit_code": run.exit_code, "passed": passed},

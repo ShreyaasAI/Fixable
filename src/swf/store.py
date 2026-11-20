@@ -229,6 +229,41 @@ def get_encrypted_github_token(conn: Conn, user_id: uuid.UUID) -> str | None:
     return None if row is None else str(row["encrypted_token"])
 
 
+def get_task_github_token(conn: Conn, task_id: uuid.UUID) -> str | None:
+    """The encrypted token of the task owner (backend only; m6 §6)."""
+    row = conn.execute(
+        "select g.encrypted_token from public.tasks t"
+        " join public.github_tokens g using (user_id) where t.id = %s",
+        [task_id],
+    ).fetchone()
+    return None if row is None else str(row["encrypted_token"])
+
+
+def record_pr(
+    conn: Conn,
+    task_id: uuid.UUID,
+    *,
+    url: str,
+    number: int,
+    branch: str,
+    commit_sha: str,
+) -> None:
+    """Set `tasks.pr_url`, append `pr_opened` and audit `pr.open`, in one transaction."""
+    row = conn.execute(
+        "select user_id, pr_url from public.tasks where id = %s for update", [task_id]
+    ).fetchone()
+    if row is None:
+        raise NotFound
+    if row["pr_url"] is not None and row["pr_url"] != url:
+        raise ValueError("task already has a different pr_url")
+    conn.execute(
+        "update public.tasks set pr_url = %s, updated_at = now() where id = %s", [url, task_id]
+    )
+    payload = {"url": url, "number": number, "branch": branch, "commit_sha": commit_sha}
+    append_event(conn, task_id, "pr_opened", payload)
+    _audit(conn, row["user_id"], "pr.open", str(task_id), payload)
+
+
 # --- reads (as_user) -----------------------------------------------------------------------
 
 

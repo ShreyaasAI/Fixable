@@ -9,12 +9,17 @@ M5 (m5-contract §6): unless `RunnerDeps.evidence` opts out, each task gets a `T
 the baseline runs at the end of `preparing` (retryable), the start snapshot is taken before
 `investigating`, the harness gates `complete_task`, and `confirming` re-runs the target.
 
-Run: `uv run python -m swf.worker` (needs `SWF_LOCAL_SOURCE` until M6 adds the GitHub clone).
+M6 (m6-contract §7): `GitHubWorkspace` clones the repo in `preparing` (≤ max_retries, then
+`clone_failed`); with a `RunnerDeps.publisher`, a confirmed task goes through `opening_pr`: the
+evidence patch is applied to a fresh clone, pushed to `agent/<task-id>` and opened as a PR.
+
+Run: `uv run python -m swf.worker` (`SWF_LOCAL_SOURCE` = copy a local directory, no PR; dev).
 """
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
 import os
 import re
@@ -46,7 +51,26 @@ from swf.agent.tools import ToolEnv
 from swf.agent.web_agent import EvidenceGate, WebAgent, WebAgentConfig
 from swf.config import AgentsFile, AgentsFileError, load_agents_file
 from swf.db import Database
-from swf.evidence import HarnessInfraError, PgEvidenceSink, TaskHarness
+from swf.evidence import (
+    HarnessInfraError,
+    PgEvidenceSink,
+    TaskHarness,
+    UnsupportedChange,
+    diff_snapshots,
+    pr_patch,
+    take_snapshot,
+)
+from swf.github import GitHubAuthError
+from swf.gitops import GitOpsError, InvalidRepoName
+from swf.pr import (
+    PrRequest,
+    PrSummary,
+    PublishError,
+    PullRequestPublisher,
+    TokenUnavailable,
+    pr_title,
+    render_pr_body,
+)
 from swf.preflight import Limits
 
 logger = logging.getLogger("swf.worker")
@@ -91,6 +115,7 @@ EnvFactory = Callable[[EnvRequest], ToolEnv]
 class TaskWorkspace:
     root: Path  # workspaces/<task-id>
     repo: Path  # root/repo (mounted at /repo)
+    base_sha: str | None = None  # set by GitHubWorkspace (the cloned HEAD)
 
 
 class WorkspaceProvider(Protocol):
@@ -151,6 +176,8 @@ class RunnerDeps:
     config: WorkerConfig
     # None -> a `TaskHarness` per task (production); `AcceptAllEvidence()` opts out (M4).
     evidence: EvidenceGate | None = None
+    # None -> no PR (M5: confirming -> completed); used only with a TaskHarness (m6 §0.11).
+    publisher: PullRequestPublisher | None = None
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
 
@@ -199,6 +226,26 @@ class _StepFailed(Exception):
     pass
 
 
+class _TaskFailed(Exception):
+    """End the task as `failed(error)`."""
+
+    def __init__(self, error: str) -> None:
+        super().__init__(error)
+        self.error = error
+
+
+# The running task's channel, for publisher retry events (`GitHubPublisher.on_retry`).
+_current_channel: contextvars.ContextVar[PgTaskChannel | None] = contextvars.ContextVar(
+    "swf_current_channel", default=None
+)
+
+
+def emit_publish_retry(step: str, attempt: int, error: str) -> None:
+    channel = _current_channel.get()
+    if channel is not None:
+        channel.emit("retry", {"step": step, "attempt": attempt, "error": error})
+
+
 class TaskRunner:
     def __init__(self, deps: RunnerDeps, task: store.Task) -> None:
         self.deps = deps
@@ -210,6 +257,7 @@ class TaskRunner:
         self.agent: WebAgent | None = None
         self.workspace: TaskWorkspace | None = None
         self.harness: TaskHarness | None = None
+        self.test_command: str | None = None
 
     def stop(self) -> None:
         """Lost lease or worker shutdown: stop at the next check, never write a status."""
@@ -225,6 +273,8 @@ class TaskRunner:
             pass
         except AgentExit as exc:
             self._fail(_EXIT_ERRORS.get(exc.status, _snake(exc.status)))
+        except _TaskFailed as exc:
+            self._fail(exc.error)
         except Exception as exc:
             logger.exception("task %s failed", self.task.id)
             self._fail(f"internal_error: {type(exc).__name__}")
@@ -234,10 +284,16 @@ class TaskRunner:
 
     def _run(self) -> None:
         deps, task, channel = self.deps, self.task, self.channel
-        self.workspace = ws = deps.workspaces.prepare(task)
+        self.workspace = ws = self._prepare_workspace()
+        if ws.base_sha:
+            channel.emit(
+                "repo_cloned",
+                {"repo": task.repo, "base_branch": task.base_branch, "base_sha": ws.base_sha},
+            )
         agents = self._agents_file(ws.repo)
         allow = list(agents.config.allow) if agents else []
         test_command = agents.config.test if agents else None
+        self.test_command = test_command
 
         preflight = task.preflight
         limits = deps.config.limits
@@ -327,6 +383,96 @@ class TaskRunner:
             return
         self._fail(_EXIT_ERRORS.get(exit_status, _snake(exit_status) or "unknown_exit"))
 
+    def _prepare_workspace(self) -> TaskWorkspace:
+        """m6 §7: clone with ≤ max_retries attempts (GitOpsError only), then clone_failed."""
+        cfg = self.agent_config
+        attempts = max(1, cfg.max_retries)
+        for attempt in range(1, attempts + 1):
+            self._check_stopped()
+            try:
+                return self.deps.workspaces.prepare(self.task)
+            except TokenUnavailable as exc:
+                raise _TaskFailed(exc.code) from None
+            except GitHubAuthError:
+                raise _TaskFailed("github_token_invalid") from None
+            except InvalidRepoName:
+                raise _TaskFailed("clone_failed") from None
+            except GitOpsError as exc:
+                if exc.auth_failed:
+                    raise _TaskFailed("github_token_invalid") from None
+                self.channel.emit("retry", {"step": "clone", "attempt": attempt, "error": str(exc)})
+                if attempt < attempts:
+                    backoff = cfg.retry_backoff_seconds
+                    if backoff:
+                        self.deps.sleep(backoff[min(attempt - 1, len(backoff) - 1)])
+        raise _TaskFailed("clone_failed")
+
+    def _summary(self, harness: TaskHarness, base_sha: str | None) -> PrSummary:
+        digest = harness.checked_digest
+        current = [r for r in harness.runs if r.workspace_digest == digest]
+        post = next((r for r in reversed(current) if r.covers_target), None)
+        suite = next((r for r in reversed(current) if r.selector is None), None)
+        files = diff_snapshots(
+            take_snapshot(harness.baseline_dir), take_snapshot(harness.repo)
+        ).paths()
+        return PrSummary(
+            task_id=self.task.id,
+            description=self.task.description,
+            failing_test=self.task.failing_test,
+            test_command=self.test_command,
+            baseline=harness.baseline,
+            baseline_suite=harness.baseline_suite,
+            post=post,
+            suite=suite,
+            rerun=harness.rerun,
+            files=files,
+            base_sha=base_sha,
+        )
+
+    def _open_pr(self, harness: TaskHarness, publisher: PullRequestPublisher) -> None:
+        """m6 §1: pr_patch -> publish -> record_pr -> completed."""
+        task, ws = self.task, self.workspace
+        assert ws is not None
+        try:
+            patch = pr_patch(harness.baseline_dir, ws.repo)
+        except UnsupportedChange as exc:
+            raise _TaskFailed(f"pr_failed: unsupported_change: {exc.path[:200]}") from None
+        if not patch:
+            raise _TaskFailed("pr_failed: empty_diff")
+        req = PrRequest(
+            task_id=task.id,
+            repo=task.repo,
+            base_branch=task.base_branch,
+            base_sha=ws.base_sha,
+            root=ws.root,
+            patch=patch,
+            title=pr_title(task),
+            body=render_pr_body(self._summary(harness, ws.base_sha)),
+        )
+        self._check_stopped()
+        ctx = _current_channel.set(self.channel)
+        try:
+            result = publisher.publish(req, task)
+        except PublishError as exc:
+            raise _TaskFailed(f"pr_failed: {exc.stage}") from None
+        except TokenUnavailable as exc:
+            raise _TaskFailed(exc.code) from None
+        except GitHubAuthError:
+            raise _TaskFailed("github_token_invalid") from None
+        finally:
+            _current_channel.reset(ctx)
+        # The PR exists now: record it even if the lease was lost (like add_cost).
+        with self.deps.db.backend() as conn:
+            store.record_pr(
+                conn,
+                task.id,
+                url=result.url,
+                number=result.number,
+                branch=result.branch,
+                commit_sha=result.commit_sha,
+            )
+        self.channel.transition("completed")
+
     def _confirm(self, harness: TaskHarness) -> None:
         """m5 §0.5: the harness re-runs the target; infra failures retry, then fail."""
         cfg = self.agent_config
@@ -346,7 +492,12 @@ class TaskRunner:
                         self.deps.sleep(backoff[min(attempt - 1, len(backoff) - 1)])
                 continue
             if confirmation.passed:
-                self.channel.transition("completed")
+                publisher = self.deps.publisher
+                if publisher is None:
+                    self.channel.transition("completed")
+                    return
+                self.channel.transition("opening_pr", phase="pr")
+                self._open_pr(harness, publisher)
                 return
             reason = (confirmation.discrepancy or {}).get("reason", "unknown")
             self._fail(
@@ -585,16 +736,15 @@ def main() -> None:
 
     from swf.agent.model import PhaseModel
     from swf.egress import EgressConfig, ensure_egress
+    from swf.github import GitHubClient
+    from swf.gitops import GitOps
+    from swf.pr import GitHubPublisher, GitHubWorkspace, db_token_source
     from swf.sandbox import cleanup_orphans, open_task_sandbox
     from swf.settings import Settings
+    from swf.tokens import TokenCipher
 
     settings = Settings.from_env()
     source = os.environ.get("SWF_LOCAL_SOURCE")
-    if not source:
-        raise SystemExit(
-            "SWF_LOCAL_SOURCE is not set: M4 has no GitHub clone (M6), so the worker needs a "
-            "local repository directory to copy for each task"
-        )
     workspaces_root = Path(os.environ.get("SWF_WORKSPACES_ROOT") or "./workspaces").resolve()
     egress = EgressConfig()
     ensure_egress(egress)
@@ -605,12 +755,24 @@ def main() -> None:
     def env_factory(req: EnvRequest) -> ToolEnv:
         return open_task_sandbox(egress, req)
 
+    workspaces: WorkspaceProvider
+    publisher: PullRequestPublisher | None
+    if source:  # dev: copy a local directory, no PR
+        workspaces, publisher = LocalCopyWorkspace(Path(source), workspaces_root), None
+    else:
+        cipher = TokenCipher(settings.token_encryption_key)
+        tokens = db_token_source(db, cipher)
+        git = GitOps()
+        api = GitHubClient(base_url=settings.github_api_url)
+        workspaces = GitHubWorkspace(git, tokens, workspaces_root)
+        publisher = GitHubPublisher(git, api, tokens, on_retry=emit_publish_retry)
     deps = RunnerDeps(
         db=db,
-        workspaces=LocalCopyWorkspace(Path(source), workspaces_root),
+        workspaces=workspaces,
         env_factory=env_factory,
         model_factory=PhaseModel.from_env,
         config=config,
+        publisher=publisher,
     )
     worker = Worker(deps, orphan_cleaner=partial(cleanup_orphans, egress=egress))
     stop = threading.Event()
