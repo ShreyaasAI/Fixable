@@ -18,15 +18,15 @@
 | M4 WebAgent, tools, approvals, model switch, worker | **Approved (user, 2026-11-20), committed on the feature branch**. 415 M4 tests passed; live 2-model Portkey smoke passed ($0); contract `docs/software-factory/m4-contract.md` |
 | M5 evidence, harness re-run, read-only backstop | **Approved, merged to `main`** (`1235cdc`). Contract `docs/software-factory/m5-contract.md` (§12 amendments override §0–§8) |
 | M6 GitHub clone, clean-clone apply, PR | **Approved, merged to `main`** (`1235cdc`). Live PR: https://github.com/ShreyaasAI/swf-pr-sandbox/pull/1. Contract `docs/software-factory/m6-contract.md` |
-| M7 guardrails (input judge + regex, output guard, Portkey opt-in) | **Implemented on `m7-check`, not merged, awaiting user review** (2026-11-21). Contract `docs/software-factory/m7-contract.md` (§13 A1–A5 override §0–§12). Results: implementation-plan §18 M7 |
+| M7 guardrails (input judge + regex, output guard, Portkey opt-in) | **Approved (user, 2026-11-21), merged to `main`**. Contract `docs/software-factory/m7-contract.md` (§13 A1–A5 override §0–§12). Results: implementation-plan §18 M7 |
 | M8–M10 | Not started |
 
-Repo state: `main` = `1235cdc`, contains M0–M6. M7 is on branch `m7-check` (worktree `.claude/worktrees/m7-check`), not merged to `main`. **Do not push until M9 is complete** (user). Work in a worktree, not on `main`. Main checkout's `.env` is untracked: never `git add -A` on `main`. Docker Desktop is running on the dev machine (x86_64).
+Repo state: `main` contains M0–M7. **Do not push until M9 is complete** (user). Work in a worktree, not on `main`. Main checkout's `.env` is untracked: never `git add -A` on `main`. Docker Desktop is running on the dev machine (x86_64).
 
 ## Waiting on the user
 
 Pending now:
-1. Review M7 (guardrails, `m7-check`). Approve to commit and merge M7 to `main`, then start M8.
+1. Go-ahead to start M8.
 
 Open risk (M7): guard latency p50 6.2 s, p95 50 s per judged text, far above research-plan A3 target (≤500 ms). Accepted for now; parallel judging and budget deferred (m7-contract §12).
 
@@ -34,7 +34,7 @@ Settled: the Supabase Free project is created in M8 (local Postgres until then);
 
 ## Next action
 
-M7 implemented on `m7-check` (2026-11-21), awaiting user review. On approval: commit and merge M7 to `main`, then start **M8** (abuse controls + gVisor) from implementation-plan §18. No push before M9.
+M7 approved and merged (2026-11-21). Start **M8** (abuse controls + gVisor) from implementation-plan §18. No push before M9.
 
 ## Reading guide
 
