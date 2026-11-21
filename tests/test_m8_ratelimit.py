@@ -64,6 +64,15 @@ def test_full_buckets_are_pruned_beyond_max_keys() -> None:
     assert len(rl) == 1
 
 
+def test_pruning_keeps_a_drained_bucket() -> None:
+    c = Clock()
+    rl = RateLimiter(per_minute=60, burst=1, clock=c, max_keys=1)
+    assert rl.hit("a") is None
+    assert rl.hit("a") is not None
+    assert rl.hit("b") is None
+    assert rl.hit("a") is not None
+
+
 def test_thread_safety_exact_token_count() -> None:
     c = Clock()
     rl = RateLimiter(per_minute=60, burst=50, clock=c)
