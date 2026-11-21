@@ -41,6 +41,7 @@ from swf.egress import EgressConfig, EgressInfo, ensure_egress, teardown_egress
 from swf.github import GitHubClient
 from swf.images import RegistryClient
 from swf.preflight import PreflightService
+from swf.settings import AbuseLimits
 from swf.tokens import TokenCipher
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -227,6 +228,19 @@ def registry() -> FakeRegistry:
     return reg
 
 
+# Every AbuseLimits field at 1_000_000: M1-M7 API tests never hit a quota or rate limit (m8 s2).
+PERMISSIVE = AbuseLimits(
+    tasks_per_day=1_000_000,
+    cost_per_task_usd=1_000_000.0,
+    cost_per_day_usd=1_000_000.0,
+    concurrent_tasks=1_000_000,
+    api_per_minute=1_000_000.0,
+    api_burst=1_000_000,
+    create_per_minute=1_000_000.0,
+    create_burst=1_000_000,
+)
+
+
 def build_deps(
     db: Database,
     verifier: JwtVerifier,
@@ -234,11 +248,21 @@ def build_deps(
     github: FakeGitHub,
     registry: FakeRegistry,
     clock: Clock,
+    *,
+    abuse: AbuseLimits = PERMISSIVE,
 ) -> AppDeps:
     gh = GitHubClient(base_url="https://api.github.com", transport=github.transport())
     preflight = PreflightService(github=gh, registry=RegistryClient(transport=registry.transport()))
+    # TODO(T8): AppDeps has no `abuse` field until T8; drop this guard and pass abuse=abuse.
+    extra: dict[str, Any] = {"abuse": abuse} if "abuse" in AppDeps.__dataclass_fields__ else {}
     return AppDeps(
-        db=db, verifier=verifier, cipher=cipher, github=gh, preflight=preflight, clock=clock
+        db=db,
+        verifier=verifier,
+        cipher=cipher,
+        github=gh,
+        preflight=preflight,
+        clock=clock,
+        **extra,
     )
 
 
