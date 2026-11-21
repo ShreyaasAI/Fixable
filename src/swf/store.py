@@ -760,8 +760,9 @@ def claim_next_task(
         return None
     head = conn.execute(
         "select id, coalesce(reservation_mb, %s) as mb, coalesce(reservation_cpu, %s) as cpu"
-        " from public.tasks where status = 'queued' order by created_seq limit 1"
-        " for update skip locked",
+        " from public.tasks t where status = 'queued' and not exists"
+        " (select 1 from public.profiles p where p.user_id = t.user_id and p.disabled)"
+        " order by created_seq limit 1 for update of t skip locked",
         [_DEFAULT_RESERVATION_MB, _DEFAULT_RESERVATION_CPU],
     ).fetchone()
     if head is None:
@@ -854,8 +855,12 @@ def check_quota(conn: Conn, user_id: uuid.UUID, day: date, limits: AbuseLimits) 
 
 
 def tasks_paused(conn: Conn) -> bool:
-    row = conn.execute("select tasks_paused from public.system_state").fetchone()
-    return bool(row is not None and row["tasks_paused"])
+    """Read the global pause under a share lock, so a concurrent global kill's UPDATE waits for
+    this transaction (an in-flight create) and then sees its task."""
+    row = conn.execute("select tasks_paused from public.system_state for share").fetchone()
+    if row is None:
+        raise RuntimeError("system_state row missing")
+    return bool(row["tasks_paused"])
 
 
 def admin_kill(conn: Conn, admin_id: uuid.UUID, user_id: uuid.UUID | None) -> list[uuid.UUID]:
@@ -873,11 +878,15 @@ def admin_kill(conn: Conn, admin_id: uuid.UUID, user_id: uuid.UUID | None) -> li
         ):
             raise NotFound
     else:
-        conn.execute(
-            "update public.system_state set tasks_paused = true, updated_at = now(),"
-            " updated_by = %s",
-            [admin_id],
-        )
+        if (
+            conn.execute(
+                "update public.system_state set tasks_paused = true, updated_at = now(),"
+                " updated_by = %s returning id",
+                [admin_id],
+            ).fetchone()
+            is None
+        ):
+            raise RuntimeError("system_state row missing")
     rows = conn.execute(
         "select id from public.tasks where status <> all(%s)"
         " and (%s::uuid is null or user_id = %s) order by created_seq for update",
@@ -906,11 +915,15 @@ def admin_resume(conn: Conn, admin_id: uuid.UUID, user_id: uuid.UUID | None) -> 
         ):
             raise NotFound
     else:
-        conn.execute(
-            "update public.system_state set tasks_paused = false, updated_at = now(),"
-            " updated_by = %s",
-            [admin_id],
-        )
+        if (
+            conn.execute(
+                "update public.system_state set tasks_paused = false, updated_at = now(),"
+                " updated_by = %s returning id",
+                [admin_id],
+            ).fetchone()
+            is None
+        ):
+            raise RuntimeError("system_state row missing")
     scope = "global" if user_id is None else "user"
     target = "global" if user_id is None else str(user_id)
     _audit(conn, admin_id, "admin.resume", target, {"scope": scope})
