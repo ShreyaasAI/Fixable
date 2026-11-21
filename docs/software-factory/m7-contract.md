@@ -4,7 +4,7 @@
 
 - **Purpose:** Interface contract for the M7 build. The coder (src/ only) and the tester (tests/ only) work from it in parallel; the checker verifies both against it. If something here is wrong, report it; do not silently diverge.
 - **Last updated:** 2026-11-21
-- **Status:** Draft, awaiting user approval. Branch `feature/m7`, on top of `1235cdc` (M6).
+- **Status:** Draft v2 (§13 amendments, user 2026-11-21, override §0–§12), awaiting user approval. Branch `feature/m7`, on top of `1235cdc` (M6).
 - Sources: plan §3, §5, §11, §12, §15, §18 M7, §19 Q3; spec §4 item 8, §8, §10, §14; research plan §2.4, §6 item 7, §8, RQ7, RQ8; m4 §5, §12; m5 §12; m6 §0.8.
 
 **Goal:** Every untrusted input (issue text, AGENTS.md, tool observations) and every model tool call passes a guard. A flag makes the user approve the next command. Malformed tool calls are refused before they run.
@@ -52,7 +52,7 @@ Finding: Portkey guardrails are reachable only as saved objects in the Portkey a
 12. [D] **Opt-in wiring.** `WebAgent(guard=None)` → `Guardrails.off()` (no input guard, output guard on). `RunnerDeps.guard_factory: Callable[[], Guardrails] | None = None` → off. `worker.main()` builds `Guardrails.from_env()` once at startup (fail-fast `MissingApiKey`) and passes `guard_factory=Guardrails.from_env`. With the input guard off, no `guard_check` event is emitted, so M4–M6 event assertions stay unchanged.
 13. [A] Guard calls are free models; their cost is not tracked and not added to `cost_limit`.
 14. [A] AGENTS.md `setup` commands run in `preparing`, before the agent starts, so they are covered by the classifier only, not by the AGENTS.md guard flag. Gating setup on a flag needs an approval in `preparing` (new transition). Deferred (§12).
-15. [A] Emails flag as PII in observations too, so `git log` output (author emails) will raise a flag. Measured by the clean corpus; the user may narrow it after M7.
+15. [D, user 2026-11-21] Emails are never PII: there is no email detector (§13 A2).
 
 ## 1. Flow (additions marked +)
 
@@ -166,7 +166,6 @@ One `Finding` per detector that matches (detail `f"{n} match"`/`f"{n} matches"`)
 
 | detector | category | pattern / rule |
 |---|---|---|
-| `email` | pii | `\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`, skipping domains `example.com`, `example.org`, `example.net`, and any local part or domain containing `noreply` (case-insensitive) |
 | `phone` | pii | `(?<![\w+])\+\d{1,3}[ .-]?\(?\d{2,4}\)?[ .-]?\d{3,4}[ .-]?\d{3,4}(?!\w)` or `(?<!\w)\(\d{3}\) ?\d{3}-\d{4}(?!\w)` |
 | `ssn` | pii | `(?<![\w-])(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}(?![\w-])` |
 | `credit_card` | pii | `(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])`, then digits only, length 13–19, Luhn-valid |
@@ -328,7 +327,7 @@ Event order for a flagged observation followed by a bash call: `tool_call`, `gua
   ```
 - Size: ≥ 20 injection, ≥ 10 toxicity, ≥ 12 malicious, ≥ 10 pii, ≥ 8 secret, ≥ 30 clean (≥ 90 total). Each category uses all three sources. Injection includes indirect forms: a code comment, a README section, a test failure message, a fake "SYSTEM:" line, base64-hinted text, instructions to run `curl` or push. Clean items are realistic repo text: code, pytest output, tracebacks, READMEs, AGENTS.md prose, and hard negatives (security docs that mention injection, a test named `test_ignore_previous`, a regex for emails, version strings, hashes, UUIDs, dates, IP-like version numbers).
 - Toxic items stay mild (insults, harassment); no slurs.
-- PII uses test values only (e.g. `4111 1111 1111 1111`, `123-45-6789`, `+1 202 555 0143`, `alice@corp.test`).
+- PII uses test values only (e.g. `4111 1111 1111 1111`, `123-45-6789`, `+1 202 555 0143`). Clean items include email addresses as hard negatives (§13 A2).
 - **Secrets are never contiguous in the file** (GitHub push protection at M9): write each token with the marker `@@@@` inside it (`ghp_@@@@abcd…`). `load_corpus()` removes every `@@@@`. A test asserts the raw file has no `scan_secrets` hit.
 
 ## 7. Tests (tester; red first). Fakes in `tests/m7_fakes.py`
@@ -337,14 +336,14 @@ Event order for a flagged observation followed by a bash call: `tool_call`, `gua
 
 | File | Asserts |
 |---|---|
-| `test_m7_sensitive.py` | Each detector in §2.3: one positive and one negative (Luhn-invalid 16 digits, `user@example.com`, `noreply@github.com`, a 40-hex git sha, a UUID, `1.2.3.4`, date `2026-11-21`). Detail never contains the matched value. `scan_secrets` returns only secrets. |
+| `test_m7_sensitive.py` | Each detector in §2.3: one positive and one negative (Luhn-invalid 16 digits, `alice@corp.test` (no email detector: never a finding), a 40-hex git sha, a UUID, `1.2.3.4`, date `2026-11-21`). Detail never contains the matched value. `scan_secrets` returns only secrets. |
 | `test_m7_judge.py` | `PortkeyJudge` with `m4_fakes.FakeCompletion`: kwargs per §0.8 (model `openai/@glm-4-7-flash/glm-4.7-flash`, `api_base`, `x-portkey-api-key` header, `temperature=0`, no `tools`); user message wraps the text in `<untrusted-{nonce}>` with a 16-hex nonce that differs per call; parses plain JSON, fenced JSON, and JSON with surrounding prose; invalid JSON or missing field on both attempts → `GuardJudgeError`, `completion` called exactly `max_attempts` times; first attempt fails, second ok → verdict; `reason` truncated to 300; `from_env` without key → `MissingApiKey`; `SWF_GUARD_MODEL` override; key absent from `repr` and from `str(GuardJudgeError)` when completion raises an error whose message contains the key. |
 | `test_m7_input_guard.py` | Empty/whitespace → no judge call, not flagged. Judge flags → findings in §2.4 order; regex + judge combine. Chunking: 20 000-char text → 2 calls of ≤ 8000 chars, the rest unjudged; regex still sees a secret at char 19 000. Cache: same text twice → 1 judge call, second `cached=True`. Judge raises → `guard_error` finding (fail-closed), not cached (next call retries). `latency_ms` from the injected clock. `as_payload` has no raw values. `Guardrails.off().check_input` → not flagged, `input_enabled` false. |
 | `test_m7_output_guard.py` | Malformed: unknown tool, args a list/string, unknown arg, missing required, wrong type, NUL in `write_file.content`. Flag: a GitHub token in `write_file.content`, an AWS key in `bash.command`. OK: normal `edit_file`, an email in `write_file.content`. |
 | `test_m7_corpus.py` | Corpus shape (§6 counts, unique ids, valid categories/sources, `expect` ⊆ categories, clean ⇒ `expect == []`); raw file has no `scan_secrets` hit; every `pii`/`secret` item is flagged by `scan_sensitive` with its category; no clean item has a `scan_sensitive` hit (regex FP = 0). |
 | `test_m7_agent.py` | With `FakeJudge` via `Guardrails(InputGuard(judge))`: (1) a flagged `read_file` observation → the next `bash` (an allowlisted command, e.g. `ls`) waits on a `guard_flag` approval; payload per §4; status goes `awaiting_command_approval` and back. (2) After a flag, `read_file`/`search` do not ask. (3) Rejected → `env` never runs the command, observation `rejected by user: …`, and the following guarded call asks again. (4) Approved → runs, flags cleared, the following command does not ask. (5) Flagged issue text → the first guarded call asks; flagged AGENTS.md prose likewise; both checked before the first model query (`judge.calls` order). (6) Classifier-`approve` command + pending flag → exactly one approval, kind `guard_flag`, `classifier.decision == "approve"`. (7) Classifier-`forbid` + pending → forbidden, no approval. (8) Judge raises → `guard_flag` with `guard_error`, next command asks (fail-closed). (9) Malformed tool call → `output_guard` event, env not called, observation starts `output guard:`. (10) Secret in `write_file` args (execute phase) → `guard_flag` approval for that same call; rejected → file not written. (11) `run_tests`, `edit_file`, `complete_task` are gated after a flag. (12) Flagged observation's `tool_result.output` ends with the GUARD_NOTE text; the model's next query contains it. (13) No raw PII/secret value appears in any event payload (serialise all events, search for the planted values). (14) Approval expiry → exit `ApprovalTimeout`. (15) `guard=None` → no `guard_check`/`guard_flag` events for a clean run (M4 compatibility); output guard still refuses malformed calls. (16) The prompt rule line is in `SYSTEM_TEMPLATE`. |
 | `test_m7_worker.py` | DB-backed (`fresh_db`, as `test_m4_worker.py`): `guard_factory` is called once per task and its `Guardrails` reaches the agent; a flagged observation produces a persisted `guard_flag` approval row, `approval_requested` event with `kind=guard_flag`, and after `store.decide_approval` an `audit_log` row `approval.decide` with `kind=guard_flag`; rejected → task continues; `guard_factory=None` → `Guardrails.off()`. `Guardrails.from_env({})` → `MissingApiKey`. |
-| `test_m7_live_corpus.py` | `-m live`, skips without `PORTKEY_API_KEY`. Runs `Guardrails.from_env().input.check` over every corpus item (`pause_seconds=1.0` between items, env `SWF_GUARD_PAUSE`). Writes `.m7-guard/results.json` (per item: id, category, source, expect, categories, flagged, latency_ms, guard_error) and `.m7-guard/results.md` with: per-category detection rate (item flagged with its expected category / items), clean FP rate (clean items flagged, any category) with and without `guard_error`, guard_error count, latency p50/p95/max. Asserts: every item has a result; pii/secret detection 100 %. Target rows (reported, not asserted): injection ≥ 80 %, malicious ≥ 80 %, toxicity ≥ 80 %, clean FP ≤ 10 %; a miss is an open question for the user. |
+| `test_m7_live_corpus.py` | `-m live`, skips without `PORTKEY_API_KEY`. Runs `Guardrails.from_env().input.check` over every corpus item (`pause_seconds=1.0` between items, env `SWF_GUARD_PAUSE`). Writes `.m7-guard/results.json` (per item: id, category, source, expect, categories, flagged, latency_ms, guard_error) and `.m7-guard/results.md` with: per-category detection rate (item flagged with its expected category / items), clean FP rate (clean items flagged, any category) with and without `guard_error`, guard_error count, latency p50/p95/max. Writes the files first, then asserts: every item has a result; pii/secret detection 100 %; injection, malicious and toxicity detection each ≥ 80 %; clean FP rate (`guard_error` counted as a flag) ≤ 10 %. Below a target the test fails (§13 A3). |
 
 Run tests with `PYTHONDONTWRITEBYTECODE=1`.
 
@@ -422,8 +421,50 @@ Merge order: tester branch (red) and coder branch merge into `feature/m7`; then 
 
 ## 12. Deferred
 
-- Portkey saved output guardrail + config (`pc-…` slug on `PhaseModel` calls): needs the user's OK to create account config, and a test that the free plan allows it.
+- Production Portkey guardrail checks (e.g. secret regex with `not: true`) and turning `SWF_PORTKEY_CONFIG` on by default (§13 A1).
 - Gating AGENTS.md `setup` commands on an AGENTS.md flag (needs an approval in `preparing`).
 - Guarding the PR body / commit message text (today it holds only commands, exit codes and ids: m6 §0.8).
-- Narrowing PII on observations (e.g. emails in `git log`), if the clean-corpus FP rate or live runs show noise.
 - Guard latency budget and parallel chunk judging (RQ7 numbers first).
+
+## 13. Amendments (user 2026-11-21) — override §0–§12
+
+### A1 Portkey saved guardrail: works on the free plan; used additively, opt-in (replaces the Q3 resolution and decision 2)
+
+[D, user] Create a saved guardrail and config on the $0 free plan and test them with one call. Done 2026-11-21 (key never printed):
+
+| Resource | Name | Slug | id |
+|---|---|---|---|
+| Guardrail (`POST /v1/guardrails`): `default.regexMatch` (rule `"ok"`) + `default.jsonSchema` (`{"type":"object","required":["ok"]}`), `deny: false`, not async | `swf-m7-output-guard` | `pg-swf-m7-c8f3fc` | `036956bc-1145-4a94-a371-b76538b97882` |
+| Config (`POST /v1/configs`): `{"output_guardrails": ["pg-swf-m7-c8f3fc"]}` | `swf-m7-output-config` | `pc-swf-m7-d1cf5c` | `18365af3-6a70-4ebd-8cb2-a8206a2c7632` |
+
+The call (glm-4.7-flash, header `x-portkey-config: pc-swf-m7-d1cf5c`) returned HTTP 200 at $0. The body has a top-level `hook_results.after_request_hooks[0]` with `verdict: true`, `id: "pg-swf-m7-c8f3fc"`, and per-check `{id, verdict, data}` for both checks. `data` holds `matchedText` / `textExcerpt` (copies of model output). **Q3 resolved:** the free plan offers regex and JSON-schema output guardrails through saved configs. Inline configs stay blocked (a workspace setting). The checks ran on the response text; whether they see tool-call arguments is not verified [A]. The in-process `OutputGuard` stays mandatory.
+
+[D, planner] M7 uses Portkey **additively and opt-in**:
+- `PhaseModelConfig.portkey_config: str | None = None`. `PhaseModel.from_env` reads `SWF_PORTKEY_CONFIG` (a `pc-…` slug matching `^pc-[A-Za-z0-9-]{1,64}$`, else `ValueError`). When set, `_query` adds `"x-portkey-config": <slug>` to `extra_headers`. Unset (the default) → no header, no behaviour change.
+- When `portkey_config` is set, `PhaseModel.query` sets `message["extra"]["portkey_hooks"] = guard.portkey_hook_verdicts(message["extra"].get("response"))`.
+- New pure function in `swf.guard`: `portkey_hook_verdicts(response: Any) -> list[dict[str, Any]] | None`. It reads `response["hook_results"]["after_request_hooks"]` by dict access (`None` if `response` is not a dict or a key is missing) and returns `[{"id": hook["id"], "verdict": bool(hook["verdict"]), "failed_checks": [c["id"] for c in hook.get("checks", []) if not c.get("verdict")]}]`. It never copies `data`, `matchedText` or `textExcerpt`.
+- `Category` and `CATEGORIES` gain `"output_check"`.
+- `WebAgent.execute_actions`, before the action loop, when `"portkey_hooks"` is in `message["extra"]`:
+  - value `None` (config set, but no hook results reached us) → one flag with `Finding("guard_error", "portkey", "hook_results missing")` (fail-closed, §0.1);
+  - each hook with `verdict` false → one flag with `Finding("output_check", f"portkey:{id}", ", ".join(failed_checks))`.
+  The flag payload uses the `model_output` shape from §3.2 (`tool` and `tool_call_id` null). It is emitted as `guard_flag` and appended to `_pending_flags`, so the next guarded call (in this message or later) needs approval.
+- `ScriptedModel` never sets `portkey_hooks`, so M4–M6 tests are unchanged.
+
+Tests added (tester):
+- `test_m7_portkey.py`: `portkey_hook_verdicts` on the spike-shaped dict (verdict true → `failed_checks == []`; one check false → its id listed; missing key or non-dict → `None`; the result has no `data`/`matchedText`/`textExcerpt`). `PhaseModel` with `FakeCompletion` and `env={"PORTKEY_API_KEY": "k", "SWF_PORTKEY_CONFIG": "pc-swf-m7-d1cf5c"}` sends the header; without the variable, no header; an invalid slug → `ValueError`.
+- `test_m7_agent.py` cases (17)–(19): `extra.portkey_hooks` with a false verdict → `guard_flag` (category `output_check`, detector `portkey:<id>`), and the bash call in the same message waits on a `guard_flag` approval; `portkey_hooks: None` → `guard_error` flag; key absent → nothing.
+- `test_m7_live_portkey.py` (`-m live`, skips without `PORTKEY_API_KEY`): one `PhaseModel` call with `SWF_PORTKEY_CONFIG=pc-swf-m7-d1cf5c` asking for `{"ok": true}` returns `extra["portkey_hooks"] == [{"id": "pg-swf-m7-c8f3fc", "verdict": True, "failed_checks": []}]`. This proves `hook_results` survives litellm's `ModelResponse.model_dump()`. If litellm drops it, the test fails and the opt-in path must stay off (report to the user).
+
+Ownership: the coder adds `src/swf/agent/model.py` to its files; the tester adds the two test files. §8 DoD adds `PYTHONDONTWRITEBYTECODE=1 uv run --env-file .env pytest -o addopts="" -q -rs -m live tests/test_m7_live_portkey.py`.
+
+### A2 No email detector (overrides §0.15, §2.3, §6, §7)
+
+[D, user] Emails are not PII anywhere. The `email` row is removed from §2.3; the other PII and secret detectors are unchanged. No `pii` corpus item relies on an email; clean items contain emails as hard negatives. `test_m7_sensitive.py` asserts an email address yields no finding.
+
+### A3 Live targets are asserted (overrides §7 `test_m7_live_corpus.py`)
+
+[D, user] Injection, malicious and toxicity detection ≥ 80 % each; clean FP ≤ 10 % (`guard_error` counted as a flag). Below a target, the live test fails. It writes `.m7-guard/results.*` before asserting.
+
+### A4 AGENTS.md setup gating stays deferred (§0.14, §12)
+
+[D, user] Unchanged: deferred.
