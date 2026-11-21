@@ -4,7 +4,7 @@
 
 - **Purpose:** The interface contract and ordered task list for M8. If something here is wrong, report it. Do not silently diverge.
 - **Last updated:** 2026-11-21
-- **Status:** Draft v1, awaiting user approval. Branch `feature/m8` (worktree `.claude/worktrees/m8-plan`), on top of `6e45a13` (M7).
+- **Status:** Draft v2: §13 amendments (user, 2026-11-21) override §0–§6. Branch `feature/m8` (worktree `.claude/worktrees/m8-plan`), on top of `6e45a13` (M7).
 - **Sources:** plan §4, §9, §15, §16, §18 M8; spec §4 item 1a, §8, §10, §12 Q1–2, §13; research plan §6 item 9, §7.4, §8; m2 §0, §4, §9 (A1, A5, deferred list); m4 §12; m6 §11; m7 §13.
 
 **Goal:** A user over quota is refused before a task starts. API abuse gets HTTP 429. An admin can stop one user's tasks or all tasks, and running containers are gone within 30 s. The sandbox suite passes under gVisor `runsc` on the Oracle VM.
@@ -713,3 +713,48 @@ ssh <user>@<vm> 'cd ~/swf && bash ops/vm-test.sh tests/test_m8_kill_docker.py te
 - Running the Squid proxy under runsc.
 - Linux workspace chown for non-1000 host users: M9 (m2 deferred). M8 uses a uid-1000 account.
 - 1-day package cache: M9.
+
+## 13. Amendments (user, 2026-11-21): override §0–§6
+
+**A1 Supabase Free project in M8 (resolves Q1, replaces §0.4's "no Supabase" and the first §6 bullet).**
+- Local/VM Postgres (`postgres:17-alpine`, or `SWF_TEST_DATABASE_URL`) stays the default test DB.
+- The Supabase run is an extra check, marked `supabase`.
+- Env vars (in `.env` only, never printed or committed):
+  - `SWF_SUPABASE_DB_URL`: the direct or session-pooler URL, port 5432, `postgres` role. Tests use it.
+  - `SWF_DATABASE_URL` and `SWF_SUPABASE_URL`: app settings, unchanged.
+- The conftest shim path is not used against Supabase: Supabase already has `auth`.
+- Free-tier limits: 500 MB DB; the project pauses after about 7 days of low activity (the keep-alive ping is M9/M10, plan §16); $0 only, no paid add-ons (no compute upgrade, PITR, custom domain, or extra project beyond the free 2).
+
+**New T6a (test-writer, after T6): `tests/test_m8_supabase.py`.**
+- Marks: `pytest.mark.supabase` (registered in `pyproject.toml`). It skips with a reason when `SWF_SUPABASE_DB_URL` is unset.
+- Every check runs in one transaction that is rolled back. No rows persist.
+- Checks:
+  1. Every file in `supabase/migrations/` is applied: `public.system_state` exists with one row, and the `tasks.preflight` column exists.
+  2. RLS is enabled on every `public` table.
+  3. `has_table_privilege` is false for `anon` and `authenticated` on `github_tokens` and `system_state`. For `authenticated` on `tasks`, only SELECT is true.
+  4. `set local role authenticated` plus `request.jwt.claims` works for the backend role (plan §4 [A]).
+  5. Cross-user read denial: insert two `auth.users` + `profiles` + one task each, then as user A see only A's task. If inserting into `auth.users` is refused, skip check 5 with that reason.
+- No URL or password appears in assertion messages.
+- Red: run with the variable set before T6b → fails (project or migrations missing).
+
+**New T6b (ops, lead).**
+- Cost check: Supabase MCP `get_cost` (type project) must show $0, then `confirm_cost`. Then `create_project` (Free plan, region close to the VM). Fallback: the user creates it in the dashboard.
+- Apply each file in `supabase/migrations/` in name order with MCP `apply_migration` (name = file stem). Confirm with `list_migrations`.
+- The user puts `SWF_SUPABASE_DB_URL` into the main checkout's `.env`. The lead never prints it.
+- Evidence: `PYTHONDONTWRITEBYTECODE=1 uv run --env-file .env pytest -o addopts="" -q -rs -m supabase tests/test_m8_supabase.py` → passed, plus MCP `get_advisors` (security) shows no RLS or grant findings on our tables.
+- §4 DoD adds that command. T14 records the project ref, not the keys.
+
+**A2 `POST /v1/admin/resume` approved (resolves Q2).** §0.11 and §1.6 stand as written.
+
+**A3 Rate-limit defaults approved** (120/min burst 60; 6 creates/min burst 3), so §0.17 is [D]. Quota values stay at the spec defaults, still **[Q]** pending the user (§0.5, Q3).
+
+**A4 Lead runs the VM steps over `ssh swf-vm` (resolves Q4; changes T12, T13).** `swf-vm` is a `~/.ssh/config` Host alias with user `ubuntu`, which has passwordless sudo.
+- T12 scripts are idempotent and non-interactive.
+  - `vm-bootstrap.sh` sets `export DEBIAN_FRONTEND=noninteractive` and preseeds `iptables-persistent/autosave_v4` and `autosave_v6` to `true` with `debconf-set-selections` before installing.
+  - `vm-sync.sh` and the T13 commands pass `-o BatchMode=yes` to ssh and scp.
+  - T11 `test_m8_ops.py` also asserts `DEBIAN_FRONTEND=noninteractive`, `debconf-set-selections` and `BatchMode=yes`.
+- T13 commands:
+  - `scp -o BatchMode=yes ops/vm-bootstrap.sh swf-vm:` then `ssh -o BatchMode=yes swf-vm sudo bash vm-bootstrap.sh`. Running it twice must succeed.
+  - The test target is `ubuntu@swf-vm` if bootstrap reports test user `ubuntu`, else `swf@swf-vm`. Bootstrap copies `ubuntu`'s `authorized_keys` to `swf`.
+  - `bash ops/vm-sync.sh <target> feature/m8`, `ssh -o BatchMode=yes <target> 'cd ~/swf && bash ops/vm-test.sh'`, then `scp` the log back.
+- The user's go-ahead for these VM changes is this amendment.
