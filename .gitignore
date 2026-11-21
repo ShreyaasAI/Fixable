@@ -6,5 +6,6 @@ __pycache__/
 .ruff_cache/
 workspaces/
 .m4-smoke/
+.m7-guard/
 .env
 .env.*

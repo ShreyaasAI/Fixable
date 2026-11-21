@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, Protocol
 
@@ -29,6 +30,7 @@ DEFAULT_PHASE_MODELS: dict[str, str] = {
     "verify": "@glm-4-7-flash/glm-4.7-flash",
 }
 PORTKEY_BASE_URL = "https://api.portkey.ai/v1"
+PORTKEY_CONFIG_RE = re.compile(r"^pc-[A-Za-z0-9-]{1,64}$")
 # Catalog slugs have no litellm price; without this every cost lookup prints a provider banner.
 litellm.suppress_debug_info = True
 
@@ -39,6 +41,8 @@ class PhaseModelConfig(LitellmModelConfig):
     api_base: str = PORTKEY_BASE_URL
     api_key_env: str = "PORTKEY_API_KEY"
     cost_tracking: Literal["default", "ignore_errors"] = "ignore_errors"
+    # m7 §13 A1: a saved Portkey config slug (`pc-...`); None -> no `x-portkey-config` header.
+    portkey_config: str | None = None
 
 
 class MissingApiKey(Exception):
@@ -98,6 +102,11 @@ class PhaseModel(LitellmModel):
         if not key:
             raise MissingApiKey(f"{self.config.api_key_env} is not set")
         self._api_key = key  # never on self.config: config is serialised into the trajectory
+        if self.config.portkey_config is None:
+            self.config.portkey_config = source.get("SWF_PORTKEY_CONFIG") or None
+        slug = self.config.portkey_config
+        if slug is not None and not PORTKEY_CONFIG_RE.fullmatch(slug):
+            raise ValueError("SWF_PORTKEY_CONFIG must be a Portkey config slug (pc-...)")
         self._completion = completion
         self.phase = "investigate"
         self.config.model_name = self.current_model
@@ -105,7 +114,8 @@ class PhaseModel(LitellmModel):
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, **kwargs: Any) -> PhaseModel:
         """Defaults plus `SWF_MODEL_INVESTIGATE` (investigate + plan) and `SWF_MODEL_EXECUTE`
-        (execute + verify) overrides; the key comes from `PORTKEY_API_KEY`."""
+        (execute + verify) overrides; the key comes from `PORTKEY_API_KEY`, the optional saved
+        guardrail config from `SWF_PORTKEY_CONFIG` (read in `__init__`)."""
         source = os.environ if env is None else env
         models = dict(DEFAULT_PHASE_MODELS)
         if investigate := source.get("SWF_MODEL_INVESTIGATE"):
@@ -131,9 +141,15 @@ class PhaseModel(LitellmModel):
             tools=tool_schemas(self.phase),
             api_base=self.config.api_base,
             api_key=self._api_key,
-            extra_headers={"x-portkey-api-key": self._api_key},
+            extra_headers=self._headers(),
             **(self.config.model_kwargs | kwargs),
         )
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"x-portkey-api-key": self._api_key}
+        if self.config.portkey_config:
+            headers["x-portkey-config"] = self.config.portkey_config
+        return headers
 
     def _parse_actions(self, response: Any) -> list[dict[str, Any]]:
         """Tool calls -> `{"tool", "args", "tool_call_id"}` (+ `"command"` for bash)."""
@@ -177,4 +193,10 @@ class PhaseModel(LitellmModel):
         message.setdefault("extra", {})
         message["extra"]["model"] = self.current_model
         message["extra"]["phase"] = self.phase
+        if self.config.portkey_config:
+            from swf import guard  # lazy: swf.guard imports this module
+
+            message["extra"]["portkey_hooks"] = guard.portkey_hook_verdicts(
+                message["extra"].get("response")
+            )
         return message

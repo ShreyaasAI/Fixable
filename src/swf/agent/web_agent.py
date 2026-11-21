@@ -16,6 +16,12 @@ an `EvidenceHarness` (`swf.evidence.TaskHarness`), every non-infra `run_tests` r
 to `record_run`, each `submit_plan` first runs the read-only backstop (a change made in
 investigate becomes a `readonly_violation` approval: rejected -> `ReadOnlyViolation`, approved
 -> re-baseline), and `record_evidence` returns the harness's bundle status.
+
+M7 (m7-contract §3.2, §13 A1): a `swf.guard.Guardrails` checks the issue text, AGENTS.md prose
+and every environment output (input guard) and every tool call (output guard). A flag is kept
+in `_pending_flags`; the next call to a `GUARDED_TOOLS` tool first needs a `guard_flag`
+approval. `swf.guard` imports `swf.agent.*`, so it is referenced here only as `guardmod.*`
+inside functions.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from minisweagent.agents.default import AgentConfig, DefaultAgent
 from minisweagent.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded, TimeExceeded
 from pydantic import ValidationError
 
+from swf import guard as guardmod
 from swf import policy, states
 from swf.agent import prompts
 from swf.agent.channel import (
@@ -181,6 +188,7 @@ class WebAgent(DefaultAgent):
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         config_class: type = WebAgentConfig,
+        guard: guardmod.Guardrails | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(model, env, config_class=config_class, **kwargs)  # type: ignore[arg-type]
@@ -193,6 +201,8 @@ class WebAgent(DefaultAgent):
         self.phase = "investigate"
         self.edits_since_approval = 0
         self._start_time = clock()
+        self.guard: guardmod.Guardrails = guard if guard is not None else guardmod.Guardrails.off()
+        self._pending_flags: list[dict[str, Any]] = []
 
     @property
     def cfg(self) -> WebAgentConfig:
@@ -211,6 +221,9 @@ class WebAgent(DefaultAgent):
             "agents_prose": "",
             "test_command": self.cfg.test_command,
         }
+        self._pending_flags = []
+        self._check_input(task, "issue")
+        self._check_input(str(kwargs.get("agents_prose") or ""), "agents_md")
         result: dict[str, Any] = super().run(task, **(defaults | kwargs))
         return result
 
@@ -276,7 +289,10 @@ class WebAgent(DefaultAgent):
         return message
 
     def execute_actions(self, message: dict[str, Any]) -> list[dict[str, Any]]:
-        actions: list[dict[str, Any]] = message.get("extra", {}).get("actions", [])
+        extra: dict[str, Any] = message.get("extra", {})
+        if "portkey_hooks" in extra:
+            self._portkey_flags(extra["portkey_hooks"])
+        actions: list[dict[str, Any]] = extra.get("actions", [])
         outputs: list[dict[str, Any]] = []
         for action in actions:
             output, stop = self._run_action(action)
@@ -420,6 +436,99 @@ class WebAgent(DefaultAgent):
         )
         return {**out, "output": shown + note + suffix}
 
+    # --- guardrails ------------------------------------------------------------------------
+
+    def _check_input(
+        self,
+        text: str,
+        source: guardmod.Source,
+        *,
+        tool: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> guardmod.GuardVerdict:
+        if not self.guard.input_enabled:
+            return guardmod.GuardVerdict(source, (), 0, 0)
+        verdict = self.guard.check_input(text, source=source)
+        if text.strip() == "":
+            return verdict
+        payload = verdict.as_payload() | {"tool": tool, "tool_call_id": tool_call_id}
+        self.channel.emit("guard_check", {k: v for k, v in payload.items() if k != "findings"})
+        if verdict.flagged:
+            self.channel.emit("guard_flag", payload)
+            self._pending_flags.append(payload)
+        return verdict
+
+    def _model_output_flag(
+        self,
+        findings: tuple[guardmod.Finding, ...],
+        tool: str | None,
+        tool_call_id: str | None,
+    ) -> None:
+        flag: dict[str, Any] = {
+            "source": "model_output",
+            "flagged": True,
+            "categories": sorted({f.category for f in findings}),
+            "findings": [f.as_payload() for f in findings],
+            "latency_ms": 0,
+            "chunks": 0,
+            "cached": False,
+            "tool": tool,
+            "tool_call_id": tool_call_id,
+        }
+        self.channel.emit("guard_flag", flag)
+        self._pending_flags.append(flag)
+
+    def _portkey_flags(self, hooks: list[dict[str, Any]] | None) -> None:
+        """m7 §13 A1: Portkey saved output guardrails; no hook results -> fail-closed."""
+        if hooks is None:
+            missing = guardmod.Finding("guard_error", "portkey", "hook_results missing")
+            self._model_output_flag((missing,), None, None)
+            return
+        for hook in hooks:
+            if not hook.get("verdict"):
+                finding = guardmod.Finding(
+                    "output_check",
+                    f"portkey:{hook.get('id')}",
+                    ", ".join(str(c) for c in hook.get("failed_checks", [])),
+                )
+                self._model_output_flag((finding,), None, None)
+
+    def _guard_approval(
+        self,
+        tool: str,
+        args: Any,
+        tool_call_id: str,
+        *,
+        classifier: dict[str, Any] | None,
+    ) -> ApprovalOutcome:
+        self._transition("awaiting_command_approval")
+        approval_id = self.channel.request_approval(
+            "guard_flag",
+            {
+                "reason": "guardrail",
+                "tool": tool,
+                "args": _truncate_args(args),
+                "tool_call_id": tool_call_id,
+                "phase": self.phase,
+                "flags": list(self._pending_flags),
+                "classifier": classifier,
+            },
+        )
+        outcome = self._wait_approval(approval_id)
+        self._transition(states.PHASE_STATUS[self.phase])
+        if outcome.status == "approved":
+            self._pending_flags = []
+        return outcome
+
+    def _guard_gate(self, tool: str, args: Any, tool_call_id: str) -> dict[str, Any] | None:
+        """Non-bash guarded tools: None = may run, else the rejection result."""
+        if not (self._pending_flags and tool in guardmod.GUARDED_TOOLS):
+            return None
+        outcome = self._guard_approval(tool, args, tool_call_id, classifier=None)
+        if outcome.status == "approved":
+            return None
+        return _result(f"rejected by user: {outcome.comment or ''}", 1)
+
     # --- dispatch --------------------------------------------------------------------------
 
     def _run_action(self, action: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -440,15 +549,30 @@ class WebAgent(DefaultAgent):
             )
             out = _result("forbidden: " + "; ".join(verdict.reasons), 126)
             return self._finish(tool, tool_call_id, out), False
+        ov = self.guard.output.check(tool, args)
+        if ov.decision != "ok":
+            self.channel.emit(
+                "output_guard", {"tool": tool, "tool_call_id": tool_call_id, **ov.as_payload()}
+            )
+        if ov.decision == "malformed":
+            out = _result("output guard: " + "; ".join(ov.errors), 1)
+            return self._finish(tool, tool_call_id, out), False
+        if ov.decision == "flag":
+            self._model_output_flag(ov.findings, tool, tool_call_id)
         suffix = ""
         stop = False
+        executed = False
         submitted: str | None = None
         try:
             validate_args(tool, args)
-            if tool == "bash":
-                out = self._bash(args)
+            rejected = None if tool == "bash" else self._guard_gate(tool, args, tool_call_id)
+            if rejected is not None:
+                out = rejected
+            elif tool == "bash":
+                out, executed = self._bash(args, tool_call_id)
             elif tool == "run_tests":
                 out, stop = self._run_tests(action, args, tool_call_id)
+                executed = True
                 if stop:
                     suffix = prompts.VERIFY_SWITCH_NOTE
             elif tool in CONTAINER_TOOLS:
@@ -458,6 +582,7 @@ class WebAgent(DefaultAgent):
                     test_command=self.cfg.test_command,
                     output_limit=self.cfg.output_limit,
                 )
+                executed = True
                 if tool in ("edit_file", "write_file") and out.get("returncode") == 0:
                     self.edits_since_approval += 1
             elif tool == "submit_plan":
@@ -479,13 +604,23 @@ class WebAgent(DefaultAgent):
                 raise ToolError(f"unknown tool {tool!r}")
         except ToolError as exc:
             out = _result(str(exc), 1)
+        if executed:
+            observed = self._check_input(
+                str(out.get("output", "") or "")[: self.cfg.output_limit],
+                "tool_observation",
+                tool=tool,
+                tool_call_id=tool_call_id,
+            )
+            if observed.flagged:
+                suffix += prompts.GUARD_NOTE.format(categories=", ".join(observed.categories()))
         result = self._finish(tool, tool_call_id, out, suffix)
         if submitted is not None:
             self.channel.emit("completed", {"summary": submitted})
             raise TaskSubmitted(submitted)
         return result, stop
 
-    def _bash(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _bash(self, args: dict[str, Any], tool_call_id: str) -> tuple[dict[str, Any], bool]:
+        """(result, whether the command ran in the environment)."""
         command: str = args["command"]
         verdict = policy.classify(command, phase=self.phase, allow=self.cfg.allow)
         self.channel.emit(
@@ -493,8 +628,17 @@ class WebAgent(DefaultAgent):
             {"command": command, "decision": verdict.decision, "reasons": list(verdict.reasons)},
         )
         if verdict.decision == "forbid":
-            return _result("forbidden: " + "; ".join(verdict.reasons), 126)
-        if verdict.decision == "approve":
+            return _result("forbidden: " + "; ".join(verdict.reasons), 126), False
+        if self._pending_flags:  # one guard_flag approval also covers the classifier (m7 §0.3)
+            outcome = self._guard_approval(
+                "bash",
+                args,
+                tool_call_id,
+                classifier={"decision": verdict.decision, "reasons": list(verdict.reasons)},
+            )
+            if outcome.status != "approved":
+                return _result(f"rejected by user: {outcome.comment or ''}", 1), False
+        elif verdict.decision == "approve":
             # Status first: a pending approval row always implies the awaiting status.
             self._transition("awaiting_command_approval")
             approval_id = self.channel.request_approval(
@@ -504,13 +648,13 @@ class WebAgent(DefaultAgent):
             outcome = self._wait_approval(approval_id)
             self._transition(states.PHASE_STATUS[self.phase])
             if outcome.status == "rejected":
-                return _result(f"rejected by user: {outcome.comment or ''}", 1)
+                return _result(f"rejected by user: {outcome.comment or ''}", 1), False
         out: dict[str, Any] = self.env.execute(
             {"command": command}, timeout=args.get("timeout_seconds")
         )
         if out.get("returncode") == 0 and self._is_writer(command):
             self.edits_since_approval += 1
-        return out
+        return out, True
 
     def _is_writer(self, command: str) -> bool:
         """A command the read-only policy forbids, i.e. one that may modify the repo."""

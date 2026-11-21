@@ -62,6 +62,7 @@ from swf.evidence import (
 )
 from swf.github import GitHubAuthError
 from swf.gitops import GitOpsError, InvalidRepoName
+from swf.guard import Guardrails
 from swf.pr import (
     PrRequest,
     PrSummary,
@@ -178,6 +179,8 @@ class RunnerDeps:
     evidence: EvidenceGate | None = None
     # None -> no PR (M5: confirming -> completed); used only with a TaskHarness (m6 §0.11).
     publisher: PullRequestPublisher | None = None
+    # None -> `Guardrails.off()` (no input guard, output guard on); m7 §5.
+    guard_factory: Callable[[], Guardrails] | None = None
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
 
@@ -355,11 +358,13 @@ class TaskRunner:
             "failing_test": task.failing_test,
             **deps.config.agent,
         }
+        guard = deps.guard_factory() if deps.guard_factory else Guardrails.off()
         self.agent = WebAgent(
             deps.model_factory(),
             env,
             channel=channel,
             evidence=gate,
+            guard=guard,
             clock=deps.clock,
             sleep=deps.sleep,
             **agent_kwargs,
@@ -744,6 +749,7 @@ def main() -> None:
     from swf.tokens import TokenCipher
 
     settings = Settings.from_env()
+    Guardrails.from_env()  # fail fast: MissingApiKey exits before any task is claimed
     source = os.environ.get("SWF_LOCAL_SOURCE")
     workspaces_root = Path(os.environ.get("SWF_WORKSPACES_ROOT") or "./workspaces").resolve()
     egress = EgressConfig()
@@ -773,6 +779,7 @@ def main() -> None:
         model_factory=PhaseModel.from_env,
         config=config,
         publisher=publisher,
+        guard_factory=Guardrails.from_env,
     )
     worker = Worker(deps, orphan_cleaner=partial(cleanup_orphans, egress=egress))
     stop = threading.Event()
