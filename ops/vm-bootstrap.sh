@@ -52,9 +52,32 @@ sudo -u "$u" -H sh -c 'command -v ~/.local/bin/uv >/dev/null || curl -LsSf https
 # bridged/forwarded and never hits the host's INPUT chain. DNS is Docker's embedded resolver
 # at 127.0.0.11 inside each container's own netns, also not host INPUT. The test Postgres
 # runs on the default docker0 bridge, which br-+ does not match.
+# Caveat: the rule sits at INPUT 1, ahead of Oracle's RELATED,ESTABLISHED ACCEPT, so replies to
+# any host -> br-* connection are dropped too. Nothing does that today: the host only talks to
+# the proxy and the test Postgres over docker0.
 iptables -C INPUT -i br-+ -j DROP 2>/dev/null || iptables -I INPUT 1 -i br-+ -j DROP
 ip6tables -C INPUT -i br-+ -j DROP 2>/dev/null || ip6tables -I INPUT 1 -i br-+ -j DROP
-netfilter-persistent save
+
+# Persist Oracle's base rules plus ours, but none of Docker's runtime state: Docker rebuilds its
+# chains on start, and stale per-container DNAT/ACCEPT lines restored at boot would linger.
+# (Not `netfilter-persistent save`, which would persist all of it.) Drops every line naming
+# docker (DOCKER* chains, docker0 rules) and every br-* line except our INPUT DROP. Table
+# headers (*filter, *nat ...), chain policies and COMMIT lines are kept, so the file stays a
+# valid iptables-restore input, e.g.:
+#   *filter / :INPUT ACCEPT [0:0] / ... / -A INPUT -i br-+ -j DROP / -A INPUT -m state ... / COMMIT
+# Rewritten from live state each run, so re-running is idempotent.
+persist_rules() {  # $1 = iptables | ip6tables, $2 = target file
+  local tmp="$2.swf-tmp"
+  "$1-save" | awk '
+    $0 == "-A INPUT -i br-+ -j DROP" { print; next }
+    tolower($0) ~ /docker/ || /br-/ { next }
+    { print }' > "$tmp"
+  "$1-restore" --test < "$tmp"
+  mv "$tmp" "$2"
+}
+install -d -m 0755 /etc/iptables
+persist_rules iptables /etc/iptables/rules.v4
+persist_rules ip6tables /etc/iptables/rules.v6
 
 # Smoke check (sed, not head: head would close the pipe early and trip pipefail).
 docker run --rm --runtime=runsc alpine:3 dmesg | sed -n '1,3p'

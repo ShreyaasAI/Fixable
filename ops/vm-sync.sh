@@ -5,6 +5,10 @@ set -euo pipefail
 # Usage: bash ops/vm-sync.sh user@host [branch]
 target="${1:?usage: vm-sync.sh user@host [branch]}"
 branch="${2:-$(git rev-parse --abbrev-ref HEAD)}"
+if [ "$branch" = HEAD ]; then
+  echo "detached HEAD: pass the branch to sync, e.g. bash ops/vm-sync.sh $target feature/m8" >&2
+  exit 1
+fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 git bundle create "$tmp/swf.bundle" "$branch"
