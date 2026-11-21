@@ -128,3 +128,34 @@ def test_normal_calls_are_ok(name: str, tool: str, args: dict[str, Any]) -> None
     verdict = guard.check(tool, args)
     assert verdict == OutputVerdict("ok")
     assert verdict.as_payload() == {"decision": "ok", "errors": [], "findings": []}
+
+
+def _plan(**over: Any) -> dict[str, Any]:
+    plan: dict[str, Any] = {
+        "summary": "s",
+        "root_cause": "r",
+        "steps": ["edit pager.py"],
+        "files": ["pager.py"],
+        "test_plan": "t",
+    }
+    return plan | over
+
+
+@pytest.mark.parametrize("field", ["steps", "files"])
+def test_a_secret_inside_a_list_argument_flags_the_call(field: str) -> None:
+    verdict = guard.check("submit_plan", _plan(**{field: ["ok", f"use {GITHUB_TOKEN}"]}))
+    assert verdict.decision == "flag"
+    assert [f.detector for f in verdict.findings] == ["github_token"]
+
+
+def test_a_nul_inside_a_list_argument_is_malformed() -> None:
+    verdict = guard.check("submit_plan", _plan(steps=["a\x00b"]))
+    assert verdict.decision == "malformed"
+    assert verdict.errors == ("NUL character in arguments",)
+
+
+def test_string_collection_recurses_into_nested_dicts_and_lists() -> None:
+    from swf.guard import _strings
+
+    nested = {"a": {"b": [f"x{GITHUB_TOKEN}", {"c": "deep"}]}, "d": 5, "e": "top"}
+    assert sorted(_strings(nested)) == sorted([f"x{GITHUB_TOKEN}", "deep", "top"])
