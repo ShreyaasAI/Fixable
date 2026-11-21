@@ -253,8 +253,6 @@ def build_deps(
 ) -> AppDeps:
     gh = GitHubClient(base_url="https://api.github.com", transport=github.transport())
     preflight = PreflightService(github=gh, registry=RegistryClient(transport=registry.transport()))
-    # TODO(T8): AppDeps has no `abuse` field until T8; drop this guard and pass abuse=abuse.
-    extra: dict[str, Any] = {"abuse": abuse} if "abuse" in AppDeps.__dataclass_fields__ else {}
     return AppDeps(
         db=db,
         verifier=verifier,
@@ -262,7 +260,7 @@ def build_deps(
         github=gh,
         preflight=preflight,
         clock=clock,
-        **extra,
+        abuse=abuse,
     )
 
 
