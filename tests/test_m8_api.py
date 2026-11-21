@@ -223,6 +223,8 @@ def test_daily_cost_limit_refuses_create(m8_client: M8Client) -> None:
 
 
 def test_parallel_creates_cannot_both_pass_the_concurrent_limit(m8_client: M8Client) -> None:
+    """Smoke test: two simultaneous creates must not both pass. It may also pass if the requests
+    happen to serialise, so it cannot prove the locking on its own."""
     env = m8_client(AbuseLimits(concurrent_tasks=1))
     user = env.user()
     barrier = threading.Barrier(2)
@@ -453,23 +455,41 @@ def test_global_kill_waits_for_an_in_flight_create_and_cancels_its_task(
     """The create transaction has run the quota and pause checks (so it holds the `system_state`
     share lock) but not committed. A global kill started now must block until the commit, then
     see and cancel the new task. Written against the store functions the API composes in its
-    insert transaction (`check_quota`, `tasks_paused`, `create_task`)."""
+    insert transaction (`check_quota`, `tasks_paused`, `create_task`); it exercises store calls,
+    not the full route. The test proves the lock by polling `pg_stat_activity` until the killer's
+    backend waits on a Lock before the create commits."""
     admin, user = make_db_user(fresh_db), make_db_user(fresh_db)
-    finished: dict[str, float] = {}
+    killer_pid: list[int] = []
     cancelled: list[uuid.UUID] = []
 
     def _kill() -> None:
         with fresh_db.backend() as conn:
+            row = conn.execute("select pg_backend_pid() as pid").fetchone()
+            killer_pid.append(row["pid"])
             cancelled.extend(store.admin_kill(conn, admin.id, None))
-        finished["kill"] = time.monotonic()
+
+    def _killer_is_lock_waiting() -> bool:
+        if not killer_pid:
+            return False
+        with fresh_db.backend() as conn:
+            row = conn.execute(
+                "select wait_event_type from pg_stat_activity where pid = %s", [killer_pid[0]]
+            ).fetchone()
+        return row is not None and row["wait_event_type"] == "Lock"
 
     killer = threading.Thread(target=_kill)
     with fresh_db.backend() as conn:
         assert store.check_quota(conn, user.id, TODAY, AbuseLimits()) is None
         assert store.tasks_paused(conn) is False
         killer.start()
-        killer.join(timeout=1.0)
-        assert killer.is_alive(), "kill must wait for the in-flight create"
+        deadline = time.monotonic() + 10.0
+        seen = False
+        while time.monotonic() < deadline:
+            if _killer_is_lock_waiting():
+                seen = True
+                break
+            time.sleep(0.02)
+        assert seen, "kill must be blocked on a lock held by the in-flight create"
         task = store.create_task(
             conn,
             user.id,
@@ -483,11 +503,9 @@ def test_global_kill_waits_for_an_in_flight_create_and_cancels_its_task(
             reservation_cpu=0.5,
             preflight=None,
         )
-        committing = time.monotonic()
     killer.join(timeout=30)
     assert not killer.is_alive()
 
-    assert finished["kill"] >= committing
     assert cancelled == [task.id]
     with fresh_db.backend() as conn:
         row = conn.execute("select status, error from tasks where id = %s", [task.id]).fetchone()
