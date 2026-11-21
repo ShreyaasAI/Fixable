@@ -295,7 +295,7 @@ class TaskRunner:
             env = self.env
             if env is not None and not self._env_released:
                 env.cleanup()
-                self._env_released = True  # a failed cleanup is retried by the next caller
+                self._env_released = True  # rm errors are swallowed; orphan_cleaner backstops
 
     # --- run -------------------------------------------------------------------------------
 
