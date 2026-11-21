@@ -28,8 +28,9 @@ USER_TABLES = {
     "evidence",
     "audit_log",
     "quotas_usage",
+    "system_state",  # M8: backend-only singleton
 }
-USER_READABLE = USER_TABLES - {"github_tokens"}
+USER_READABLE = USER_TABLES - {"github_tokens", "system_state"}
 PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]
 
 
