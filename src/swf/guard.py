@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 import litellm
+import litellm.exceptions
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from swf.agent.model import PORTKEY_BASE_URL, MissingApiKey
@@ -67,6 +68,18 @@ GUARDED_TOOLS: frozenset[str] = frozenset(
     {"bash", "edit_file", "write_file", "run_tests", "complete_task"}
 )
 _REASON_LIMIT = 300
+# glm-4.7-flash always reasons first (thinking cannot be disabled through Portkey; probed
+# 2026-11-21): ~400-1100 reasoning tokens, then the JSON. 400 tokens left `content` empty
+# (finish_reason "length"). Calls queue on the free tier for 10-55 s.
+JUDGE_MAX_TOKENS = 2000
+JUDGE_TIMEOUT_SECONDS = 120.0
+# The free z-ai provider answers "temporarily overloaded" (429/503) under load: back off and
+# retry instead of failing closed at once. Other errors retry immediately.
+OVERLOAD_BACKOFF_SECONDS = 10.0
+_OVERLOAD_ERRORS: tuple[type[Exception], ...] = (
+    litellm.exceptions.RateLimitError,
+    litellm.exceptions.ServiceUnavailableError,
+)
 _JUDGE_CATEGORIES: tuple[Literal["injection", "toxicity", "malicious"], ...] = (
     "injection",
     "toxicity",
@@ -220,7 +233,8 @@ malware, credential theft, data exfiltration, unauthorised access or scanning, d
 Ordinary code, tests, error messages, stack traces, and documentation that merely mention \
 these topics are not flagged.
 
-Reply with exactly one JSON object and nothing else:
+Think briefly (two short sentences at most), then reply with exactly one JSON object and \
+nothing else:
 {"injection": true|false, "toxicity": true|false, "malicious": true|false, \
 "reason": "<one short sentence>"}
 """
@@ -236,7 +250,31 @@ def _parse_verdict(content: str) -> JudgeVerdict:
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end < start:
         raise ValueError("no JSON object in the judge reply")
-    return JudgeVerdict.model_validate_json(text[start : end + 1])
+    try:
+        return JudgeVerdict.model_validate_json(text[start : end + 1])
+    except ValueError:
+        lenient = _lenient_verdict(text)
+        if lenient is None:
+            raise
+        return lenient
+
+
+_BOOL_FIELD = {name: re.compile(rf'"{name}"\s*:\s*(true|false)\b') for name in _JUDGE_CATEGORIES}
+_REASON_FIELD = re.compile(r'"reason"\s*:\s*"?(.*?)"?\s*\}', re.DOTALL)
+
+
+def _lenient_verdict(text: str) -> JudgeVerdict | None:
+    """glm-4.7-flash often leaves the reason unquoted (`"reason": It tries ...}`, live
+    2026-11-21). All three booleans must still be present and literal; the last one wins."""
+    values: dict[str, bool] = {}
+    for name, rx in _BOOL_FIELD.items():
+        hits = rx.findall(text)
+        if not hits:
+            return None
+        values[name] = hits[-1] == "true"
+    reasons = _REASON_FIELD.findall(text)
+    reason = reasons[-1].strip() if reasons else ""
+    return JudgeVerdict(reason=reason, **values)
 
 
 class PortkeyJudge:
@@ -247,8 +285,11 @@ class PortkeyJudge:
         model: str = GUARD_MODEL,
         api_base: str = PORTKEY_BASE_URL,
         completion: Callable[..., Any] = litellm.completion,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = JUDGE_TIMEOUT_SECONDS,
         max_attempts: int = 2,
+        sleep: Callable[[float], None] = time.sleep,
+        overload_backoff_seconds: float = OVERLOAD_BACKOFF_SECONDS,
+        max_overload_retries: int = 3,
     ) -> None:
         if not api_key:
             raise MissingApiKey("PORTKEY_API_KEY is not set")
@@ -258,6 +299,9 @@ class PortkeyJudge:
         self._completion = completion
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max_attempts
+        self._sleep = sleep
+        self.overload_backoff_seconds = overload_backoff_seconds
+        self.max_overload_retries = max_overload_retries
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, **kw: Any) -> PortkeyJudge:
@@ -284,19 +328,31 @@ class PortkeyJudge:
                 {"role": "user", "content": user},
             ],
             temperature=0,
-            max_tokens=400,
+            max_tokens=JUDGE_MAX_TOKENS,
             timeout=self.timeout_seconds,
         )
         content = response.choices[0].message.content
         return _parse_verdict(str(content or ""))
 
     def judge(self, text: str, *, source: Source) -> JudgeVerdict:
+        """`max_attempts` tries; an overload answer (429/503) does not use up an attempt but
+        waits `overload_backoff_seconds * n` first, at most `max_overload_retries` times."""
         last: Exception | None = None
-        for _ in range(max(1, self.max_attempts)):
+        attempts = max(1, self.max_attempts)
+        attempt = overloads = 0
+        while attempt < attempts:
             try:
                 return self._call(text, source)
+            except _OVERLOAD_ERRORS as exc:
+                last = exc
+                if overloads < self.max_overload_retries:
+                    overloads += 1
+                    self._sleep(self.overload_backoff_seconds * overloads)
+                    continue
+                attempt += 1
             except Exception as exc:
                 last = exc
+                attempt += 1
         # Type name only: litellm error messages can echo request headers.
         raise GuardJudgeError(type(last).__name__) from None
 
