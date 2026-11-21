@@ -220,6 +220,79 @@ def test_resume_unknown_user_raises_not_found(fresh_db: Database) -> None:
         store.admin_resume(conn, admin.id, uuid.uuid4())
 
 
+def test_global_kill_audit_actor_is_the_admin(fresh_db: Database) -> None:
+    admin = make_db_user(fresh_db)
+    with fresh_db.backend() as conn:
+        store.admin_kill(conn, admin.id, None)
+    (row,) = audit_rows(fresh_db, "admin.kill")
+    assert row["user_id"] == admin.id
+
+
+def test_global_resume_audit_actor_and_payload(fresh_db: Database) -> None:
+    admin = make_db_user(fresh_db)
+    with fresh_db.backend() as conn:
+        store.admin_resume(conn, admin.id, None)
+    (row,) = audit_rows(fresh_db, "admin.resume")
+    assert row["user_id"] == admin.id
+    assert row["payload"] == {"scope": "global"}
+
+
+def test_user_resume_audit_actor_and_payload(fresh_db: Database) -> None:
+    admin, a = make_db_user(fresh_db), make_db_user(fresh_db)
+    with fresh_db.backend() as conn:
+        store.admin_resume(conn, admin.id, a.id)
+    (row,) = audit_rows(fresh_db, "admin.resume")
+    assert row["user_id"] == admin.id
+    assert row["payload"] == {"scope": "user"}
+
+
+def delete_system_state(db: Database) -> None:
+    with db.backend() as conn:
+        conn.execute("delete from public.system_state")
+
+
+def test_tasks_paused_raises_when_the_row_is_missing(fresh_db: Database) -> None:
+    delete_system_state(fresh_db)
+    with pytest.raises(RuntimeError), fresh_db.backend() as conn:
+        store.tasks_paused(conn)
+
+
+def test_global_kill_raises_when_the_row_is_missing(fresh_db: Database) -> None:
+    admin = make_db_user(fresh_db)
+    delete_system_state(fresh_db)
+    with pytest.raises(RuntimeError), fresh_db.backend() as conn:
+        store.admin_kill(conn, admin.id, None)
+    assert audit_rows(fresh_db, "admin.kill") == []
+
+
+def test_global_resume_raises_when_the_row_is_missing(fresh_db: Database) -> None:
+    admin = make_db_user(fresh_db)
+    delete_system_state(fresh_db)
+    with pytest.raises(RuntimeError), fresh_db.backend() as conn:
+        store.admin_resume(conn, admin.id, None)
+    assert audit_rows(fresh_db, "admin.resume") == []
+
+
+def test_claim_skips_a_queued_task_of_a_disabled_user(fresh_db: Database) -> None:
+    a = make_db_user(fresh_db)
+    queued_task(fresh_db, user=a)
+    with fresh_db.backend() as conn:
+        conn.execute("update public.profiles set disabled = true where user_id = %s", [a.id])
+    with fresh_db.backend() as conn:
+        assert store.claim_next_task(conn, worker_id="w1", lease_seconds=60) is None
+
+
+def test_claim_still_serves_other_users_when_one_is_disabled(fresh_db: Database) -> None:
+    a, b = make_db_user(fresh_db), make_db_user(fresh_db)
+    queued_task(fresh_db, user=a)
+    tb = queued_task(fresh_db, user=b)
+    with fresh_db.backend() as conn:
+        conn.execute("update public.profiles set disabled = true where user_id = %s", [a.id])
+    with fresh_db.backend() as conn:
+        claimed = store.claim_next_task(conn, worker_id="w1", lease_seconds=60)
+    assert claimed is not None and claimed.id == tb.id
+
+
 # --- 7. stopped_task_ids --------------------------------------------------------------------
 
 
