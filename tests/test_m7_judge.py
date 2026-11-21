@@ -49,8 +49,8 @@ def test_the_call_goes_through_portkey_with_the_contract_arguments() -> None:
     assert sent["api_key"] == KEY
     assert sent["extra_headers"] == {"x-portkey-api-key": KEY}
     assert sent["temperature"] == 0
-    assert sent["max_tokens"] == 400
-    assert sent["timeout"] == 30
+    assert sent["max_tokens"] == 2000
+    assert sent["timeout"] == 120
     assert "tools" not in sent
     assert "tool_choice" not in sent
 
