@@ -61,7 +61,7 @@ def test_bootstrap_installs_gvisor_and_isolates_the_host() -> None:
     text = _text("vm-bootstrap.sh")
     assert "runsc install" in text
     assert "-i br-+ -j DROP" in text
-    assert "1000" in text  # the uid 1000 test-user check
+    assert "getent passwd 1000" in text  # the uid 1000 test-user check
 
 
 def test_bootstrap_is_non_interactive() -> None:
