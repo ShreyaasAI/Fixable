@@ -28,11 +28,11 @@ from m6_fakes import (
     refs,
     scan_for,
 )
-from swf.gitops import GitOps, branch_name
-from swf.pr import GitHubPublisher, GitHubWorkspace
 
 from swf.db import Database
 from swf.egress import EgressConfig, EgressInfo
+from swf.gitops import GitOps, branch_name
+from swf.pr import GitHubPublisher, GitHubWorkspace
 from swf.sandbox import open_task_sandbox
 from swf.worker import EnvRequest, RunnerDeps, Worker, WorkerConfig
 

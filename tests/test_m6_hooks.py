@@ -28,6 +28,7 @@ from m6_fakes import (
     ref_sha,
     trap_pushurl,
 )
+
 from swf.gitops import branch_name
 
 FIX = {"pager.py": "def paginate(items, page, size):\n    return items\n"}

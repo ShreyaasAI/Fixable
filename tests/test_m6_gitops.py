@@ -22,6 +22,7 @@ from m6_fakes import (
     ref_sha,
     scan_for,
 )
+
 from swf.gitops import (
     GitOps,
     GitOpsError,

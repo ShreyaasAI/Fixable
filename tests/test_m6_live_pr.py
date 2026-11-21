@@ -20,13 +20,13 @@ import pytest
 from m4_fakes import queued_task
 from m5_fakes import events_of_type
 from m6_fakes import scan_for
-from swf.gitops import GitOps, branch_name, normalize_repo
-from swf.pr import GitHubPublisher, GitHubWorkspace, PrRequest
 
 from swf import store
 from swf.db import Database
 from swf.evidence import copy_tree, pr_patch
 from swf.github import GitHubClient
+from swf.gitops import GitOps, branch_name, normalize_repo
+from swf.pr import GitHubPublisher, GitHubWorkspace, PrRequest
 
 pytest_plugins = ["m4_fakes", "m5_fakes"]
 pytestmark = [pytest.mark.live, pytest.mark.network]
@@ -59,7 +59,13 @@ def test_a_real_pr_is_opened_on_the_throwaway_repo(fresh_db: Database, tmp_path:
     token = gh_token()
     api = GitHubClient()
     meta = api.get_repo(token, repo)
-    if meta.size_kb == 0:
+    commits = httpx.get(
+        f"https://api.github.com/repos/{repo}/commits",
+        params={"per_page": 1},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    if commits.status_code == 409:  # GitHub: "Git Repository is empty"; size_kb lags for tiny repos
         pytest.skip(f"{repo} is empty; add a README first")
     if not meta.can_push:
         pytest.skip(f"the gh token cannot push to {repo}")

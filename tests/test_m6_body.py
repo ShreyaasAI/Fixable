@@ -5,9 +5,9 @@ from __future__ import annotations
 import uuid
 
 from m6_fakes import make_task
-from swf.pr import PrSummary, pr_title, render_pr_body
 
 from swf.evidence import EvidenceRecord
+from swf.pr import PrSummary, pr_title, render_pr_body
 
 SECRET_OUTPUT = "SECRET_OUTPUT token=ghs_abc123 /home/user/.ssh"
 TASK_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")

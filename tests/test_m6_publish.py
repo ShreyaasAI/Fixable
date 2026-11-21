@@ -27,10 +27,10 @@ from m6_fakes import (
     scan_for,
     write_files,
 )
-from swf.gitops import branch_name
-from swf.pr import PublishError
 
 from swf.github import GitHubAuthError
+from swf.gitops import branch_name
+from swf.pr import PublishError
 
 FIX = {"pager.py": "def paginate(items, page, size):\n    return items\n", "new.txt": "n\n"}
 AUTHOR_STR = f"{AUTHOR[0]} <{AUTHOR[1]}>"

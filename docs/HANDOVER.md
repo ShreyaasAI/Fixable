@@ -17,7 +17,8 @@
 | M3 command classifier + phase policy | **Built, committed `1296b28` on `feature/m2-sandbox-preflight-1120a`**, user said complete (2026-11-20). Corpus 260 cmds, 0 forbidden bypasses |
 | M4 WebAgent, tools, approvals, model switch, worker | **Approved (user, 2026-11-20), committed on the feature branch**. 415 M4 tests passed; live 2-model Portkey smoke passed ($0); contract `docs/software-factory/m4-contract.md` |
 | M5 evidence, harness re-run, read-only backstop | **Implemented, awaiting user review** (2026-11-21). Contract `docs/software-factory/m5-contract.md` (§12 amendments override §0–§8). Evidence: see M5 close-out |
-| M6–M10 | Not started |
+| M6 GitHub clone, clean-clone apply, PR | **Implemented, awaiting user review** (2026-11-21). Live PR: https://github.com/ShreyaasAI/swf-pr-sandbox/pull/1 (open, not merged). Contract `docs/software-factory/m6-contract.md`. Evidence: see M6 close-out |
+| M7–M10 | Not started |
 
 Repo state: M2 + M3 committed as `1296b28` on `feature/m2-sandbox-preflight-1120a` (worktree `.claude/worktrees/m2-sandbox-preflight-1120a`); M4 committed there too. `main` still at `e2a9863` ("M0 + M1: …", 98 files). `origin` is not configured (the GitHub repo `https://github.com/ShreyaasAI/Fixable.git` is not a remote), and nothing is pushed. **Do not push until M9 is complete** (user). A new session must work in the worktree (or ask the user), not on `main`. Docker Desktop is running on the dev machine (x86_64).
 
@@ -26,14 +27,14 @@ Repo state: M2 + M3 committed as `1296b28` on `feature/m2-sandbox-preflight-1120
 ## Waiting on the user
 
 Pending now:
-1. Review M5 (evidence, harness re-run, backstop). Approve to start M6.
+1. Review M5 (evidence, harness re-run, backstop) and M6 (GitHub clone, clean-clone apply, PR). Approve to start M7.
 2. Whether to merge `feature/m2-sandbox-preflight-1120a` (M2–M4) into `main` (no push before M9).
 
 Settled: the Supabase Free project is created in M8 (local Postgres until then); the GitHub token comes in via `POST /v1/me/github-token`; the M2 decisions (Squid proxy, package cache deferred to M9, over-limit estimates rejected at creation, 1 vCPU / 4 GB per task) are in `m2-contract.md` §0.
 
 ## Next action
 
-M5 implemented (2026-11-21), awaiting user review. On approval, start **M6** (GitHub clone, clean-clone apply, PR) from implementation-plan §18. No push before M9.
+M6 implemented (2026-11-21), awaiting user review. On approval, start **M7** (guardrails) from implementation-plan §18. No push before M9.
 
 ## Reading guide
 
@@ -47,6 +48,7 @@ Read by need, not front to back:
 | M2 interfaces, decisions and amendments (working contract) | `docs/software-factory/m2-contract.md` — §0 decisions; §9 amendments override §1–§8 |
 | M4 interfaces and amendments (working contract) | `docs/software-factory/m4-contract.md` — §12 amendments override §0–§11 |
 | M5 interfaces and amendments (working contract) | `docs/software-factory/m5-contract.md` — §12 amendments override §0–§8 |
+| M6 interfaces and decisions (working contract) | `docs/software-factory/m6-contract.md` — §0 decisions; §4 `swf.pr`; §11 deferred |
 | The original process rules from the user | `PROMPT.md` |
 | Baseline for the agent's system prompt | `system_prompts/Cursor_*` (adapt the behavioural rules; the tool schemas don't apply) |
 

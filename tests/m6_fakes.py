@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import uuid
 from collections.abc import Mapping, Sequence
@@ -131,8 +132,18 @@ def bare_remote(
     bare = remote_root / f"{repo}.git"
     bare.parent.mkdir(parents=True, exist_ok=True)
     git("clone", "-q", "--bare", str(work), str(bare))
-    shutil.rmtree(work, ignore_errors=True)
+    rmtree_force(work)
     return remote_root.as_uri(), bare
+
+
+def _make_writable_and_retry(func: Any, path: str, exc: BaseException) -> None:
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def rmtree_force(path: Path) -> None:
+    """rmtree that copes with read-only git pack files on Windows."""
+    shutil.rmtree(path, onexc=_make_writable_and_retry)
 
 
 def clone_plain(base: str, repo: str, dest: Path, branch: str = BASE_BRANCH) -> None:

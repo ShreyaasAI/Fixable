@@ -2,7 +2,7 @@
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
 - **Last updated:** 2026-11-21
-- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 implemented, awaiting user review (2026-11-21)
+- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 implemented, awaiting user review (2026-11-21); M6 implemented, awaiting user review (2026-11-21)
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
 Labels: **[D]** confirmed decision · **[A]** assumption · **[Q]** open question. Nothing here goes beyond the approved spec; roadmap items are listed only as non-goals.
@@ -200,7 +200,7 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - [x] Migrations + RLS policies; FastAPI app; Supabase JWT verification; GitHub repo listing (mocked in tests)
 - **DoD:** API + RLS tests green against local Postgres. **Status 2026-11-19: done, awaiting review** (149 passed against `postgres:17-alpine` + `tests/fixtures/supabase_shim.sql`; ruff, ruff format, mypy strict clean). Mutation check: dropping the table revokes, opening the RLS policies, or dropping the write ownership check each turns tests red.
 - Files: `supabase/migrations/20261119000000_m1_init.sql`; `swf.{db,store,auth,tokens,github,settings}`, `swf.api.{app,main}`.
-- Deferred by design: `preflight` is `null` until M2; SSE `/events` → M4; `/evidence` → M5; `DELETE /v1/tasks/{id}` + workspace → M6; the repo/branch access check at task creation → M2 (moved from M6 [D, 2026-11-20]); quota *enforcement*, rate limits, kill switch → M8 (M1 only counts). The Supabase Free project is created in M8 (user, 2026-11-19); M1 runs on local Postgres only.
+- Deferred by design: `preflight` is `null` until M2; SSE `/events` → M4; `/evidence` → M5; `DELETE /v1/tasks/{id}` + workspace → M10; the repo/branch access check at task creation → M2 (moved from M6 [D, 2026-11-20]); quota *enforcement*, rate limits, kill switch → M8 (M1 only counts). The Supabase Free project is created in M8 (user, 2026-11-19); M1 runs on local Postgres only.
 
 ### M2 — Sandbox, egress proxy, pre-flight
 - [x] Tests: allowlisted registry reachable, other hosts blocked; token absent from the container; memory/CPU/pids limits; orphan cleanup; arm64 image check; over-threshold warning before start; queueing at capacity
@@ -209,7 +209,7 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - Interface contract for the parallel build: `docs/software-factory/m2-contract.md`.
 - Decisions [D, 2026-11-20] (user): egress proxy = Squid, image `ubuntu/squid:6.6-24.04_edge` (multi-arch incl. arm64); only `squid.conf` is ours, `cache deny all`. The 1-day package cache is deferred to M9; M2 is allowlist only. An estimate above the per-task limit is rejected at creation: the task row is stored as `rejected` before any container starts, and it does not count toward the daily task quota (this is how M2 meets "over-threshold warning before start"). 1 vCPU per task (`--cpus 1`), 4 GB. Host capacity for admission: 2 concurrent tasks, 8192 MB, 2.0 CPUs (the 12 GB host keeps 4 GB for OS/API/worker/proxy). Registry allowlist as the SSRF guard, because `image:` comes from the user's repo: `registry-1.docker.io` (`docker.io`/`index.docker.io` normalise to it), `ghcr.io`, `quay.io`, `public.ecr.aws`, `mcr.microsoft.com`, `registry.gitlab.com`. Sandboxes get no external DNS (`--dns 127.0.0.1`) and reach the proxy by its IP on the internal network; Squid resolves names. Pre-flight runs inside `POST /v1/tasks` through the GitHub API (repo, branch, `AGENTS.md`), so the repo/branch access check moves from M6 to M2. Seeds' `setup` installs `pytest==9.2.0` through the proxy. Test runs set `PYTHONDONTWRITEBYTECODE=1` on the host and in the container.
 - Files: `src/swf/images.py` (new: image-ref parser, registry allowlist, anonymous manifest/platform lookup) · `src/swf/preflight.py` (new: `Limits`, pure `evaluate`, `PreflightService` over GitHub + registry + capacity) · `src/swf/sandbox.py` (new: `SandboxSpec`, hardened `docker run` args, `SandboxEnv(DockerEnvironment)` with synchronous cleanup, label-based `cleanup_orphans`) · `src/swf/egress.py` (new: `squid.conf` renderer, `ensure_egress`/`teardown_egress` for the internal network + proxy container) · `src/swf/github.py` (`GitHubNotFound`, `RepoMeta`, `get_repo`, `branch_exists`, `get_file`) · `src/swf/store.py` (`ACTIVE_STATUSES`, `capacity_snapshot`, `Task.preflight`, `create_task` with status/reservations/preflight; no quota count for `rejected`) · `src/swf/api/app.py` (`AppDeps.preflight`; pre-flight and error mapping in `POST /v1/tasks`) · `src/swf/api/main.py` (wires `RegistryClient` + `PreflightService`) · `supabase/migrations/20261120000000_m2_preflight.sql` (new: `tasks.preflight jsonb`) · `seeded_repos/*/repo/AGENTS.md` ×10 (`setup` installs pytest via the proxy) · `pyproject.toml` + `uv.lock` (pin `mini-swe-agent==2.4.6`; pytest markers `docker`, `network`) · `tests/conftest.py`, `tests/helpers.py` (template-DB clones `db`/`fresh_db`, `FakeGitHub`, `FakeRegistry`, session `egress` fixture) · `tests/test_images.py`, `test_preflight.py`, `test_sandbox_unit.py`, `test_sandbox_docker.py`, `test_seeded_repos_container.py`, `test_store_capacity.py` (new) · `tests/test_api.py`, `test_tokens_github.py` (pre-flight integration, GitHub additions) · `docs/software-factory/m2-contract.md` (new).
-- Deferred: gVisor `--runtime runsc` → M8 (the `runtime` field exists, unset locally); 1-day package cache → M9; worker claim and admission with `SKIP LOCKED` → M4 (the M2 decision is advisory and is not a reservation); Linux workspace ownership (chown for uid 1000) → M6 clone (Docker Desktop bind mounts are writable by any uid).
+- Deferred: gVisor `--runtime runsc` → M8 (the `runtime` field exists, unset locally); 1-day package cache → M9; worker claim and admission with `SKIP LOCKED` → M4 (the M2 decision is advisory and is not a reservation); Linux workspace ownership (chown for uid 1000) → M9 (Docker Desktop bind mounts are writable by any uid).
 - Open risks → later milestones: importing mini-swe-agent loads `%LOCALAPPDATA%/mini-swe-agent/.env` into the backend (set `MSWEA_GLOBAL_CONFIG_DIR` to an empty dir and `MSWEA_SILENT_STARTUP=1` in the worker, M4); admission is not serialised (authoritative claim in M4); proxy sits on Docker's default bridge and a recreated proxy may get a new task-network IP (M8 hardening on the VM); `squid.conf` carries `umask 022` so the entrypoint can tail logs with all caps dropped. **Resolved in M4 (2026-11-20):** `MSWEA_GLOBAL_CONFIG_DIR` and `MSWEA_SILENT_STARTUP` set in the worker; serialised admission replaced by an advisory lock + `FOR UPDATE SKIP LOCKED` in `claim_next_task`.
 
 ### M3 — Command classifier + phase policy
@@ -252,8 +252,19 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - Deferred: production `WorkspaceProvider` (clone) and PR → M6.
 
 ### M6 — GitHub clone, clean-clone apply, PR
-- [ ] Tests: hooks never run (planted hook fixture); branch fixed server-side; no token in the workspace; PR created on a test repo (marked live test)
-- **DoD:** a PR opened on a throwaway repo; the link is recorded.
+- [x] Tests: hooks never run (planted hook fixture); branch fixed server-side; no token in the workspace; PR created on a test repo (marked live test)
+- [x] Live PR opened on the throwaway repo and the link recorded
+- **DoD:** met. PR https://github.com/ShreyaasAI/swf-pr-sandbox/pull/1 (branch `agent/<task-id>`, open, not merged). **Status 2026-11-21: implemented, awaiting user review.** Evidence: see M6 close-out.
+- Contract: `docs/software-factory/m6-contract.md`.
+- Decisions [D, user 2026-11-21]:
+  - Live test token comes from `gh auth token`; never stored or printed.
+  - Throwaway repo `ShreyaasAI/swf-pr-sandbox` (env `SWF_TEST_REPO`), seeded with one commit.
+  - Token at rest: Fernet with key `SWF_TOKEN_ENCRYPTION_KEY` (existing M1 name).
+  - No push to `ShreyaasAI/Fixable` before M9.
+- Built: `swf.gitops` (clone, apply, commit, push). Git env is built from scratch: `core.hooksPath=/dev/null`, fsmonitor off, credential helper reset, askpass reads `SWF_GIT_TOKEN`. Branch is always `agent/<uuid>`; no force push. `swf.pr` (`GitHubWorkspace` clones before the sandbox; `GitHubPublisher` makes a clean clone into `pr/`, then `git apply`, commit, push, PR). `github.create_pull`; no merge call anywhere. PR body holds commands, exit codes, and failure ids only.
+- Evidence: binary, symlink, or `.git` paths → `pr_failed: unsupported_change`. M5 backstop rebaselines are excluded from the PR.
+- Store: `record_pr` (sets `pr_url`, event `pr_opened`, audit) and `get_task_github_token`. Worker: `confirming` → `opening_pr` → `completed`. Failures: `clone_failed`, `pr_failed:<stage>`, `github_token_missing`, `github_token_invalid`. No migration.
+- Deferred: `DELETE /v1/tasks/{id}` → M10; Linux workspace chown → M9; `can_push` pre-check → M8.
 
 ### M7 — Guardrails
 - [ ] Tests: seeded injection/PII/toxic/malicious corpus flagged; flag → approval required for the next command; malformed output caught by the output guard (Portkey or in-process fallback)

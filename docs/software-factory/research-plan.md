@@ -1,7 +1,7 @@
 # Web Coding Agent — Research Plan (v2)
 
 - **Purpose:** Record what is known, what must be validated, the architecture options with trade-offs, and the recommended minimal architecture and milestones for the MVP in the problem specification.
-- **Last updated:** 2026-11-20
+- **Last updated:** 2026-11-21
 - **Status:** Approved (v2, 2026-11-19, via the user's go-ahead to implement — supersedes v1)
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — source of truth for scope) · `docs/software-factory/implementation-plan.md` (Under review) · `PROMPT.md` · `system_prompts/Cursor_*`
 
@@ -22,7 +22,7 @@ Labels: **[D]** decision (from the spec) · **[V]** verified on 2026-11-19 · **
 | RQ7 | Latency/accuracy of the input guardrails (free-LLM injection check; Guardrails AI PII/toxicity/malicious intent)? | Every input passes through them | Benchmark on seeded + clean corpus |
 | RQ8 | What do Portkey output guardrails offer for regex + JSON schema checks on tool-call arguments, and how do they fail (block vs flag)? | Output guardrail [D] | Portkey docs + spike |
 | RQ9 | How accurately can memory/CPU be estimated before start? | Pre-flight [D] | Compare estimates vs measured peaks on the seeded repos |
-| RQ10 | ~~GitHub App vs OAuth~~ — resolved: OAuth user token [D] | — | Prototype clone + PR with the user token in M6 |
+| RQ10 | ~~GitHub App vs OAuth~~ — resolved: OAuth user token [D] | — | Prototyped in M6: clone + PR with the user token (live PR on the throwaway repo) |
 
 ## 2. Already known
 

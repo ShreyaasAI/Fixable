@@ -49,11 +49,11 @@ from m6_fakes import (
     scan_for,
     write_files,
 )
-from swf.gitops import GitOps, branch_name
-from swf.pr import GitHubPublisher, GitHubWorkspace, TokenUnavailable
 
 from swf import store
 from swf.db import Database
+from swf.gitops import GitOps, branch_name
+from swf.pr import GitHubPublisher, GitHubWorkspace, TokenUnavailable
 from swf.worker import EnvRequest, RunnerDeps, TaskRunner, WorkerConfig
 
 pytest_plugins = ["m4_fakes", "m5_fakes"]

@@ -15,6 +15,7 @@ from m6_fakes import (
     bare_remote,
     clone_plain,
     git,
+    rmtree_force,
     tree_bytes,
     write_files,
 )
@@ -70,7 +71,7 @@ def rig(tmp_path: Path) -> tuple[Path, Path, str]:
     start = tmp_path / "baseline"
     repo = tmp_path / "repo"
     clone_plain(base_url, REPO, repo)
-    shutil.rmtree(repo / ".git")
+    rmtree_force(repo / ".git")
     shutil.copytree(repo, start)
     return start, repo, base_url
 
