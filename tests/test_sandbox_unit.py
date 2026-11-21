@@ -23,6 +23,12 @@ from swf.sandbox import (
 PROXY = "http://172.30.0.2:3128"
 
 
+@pytest.fixture(autouse=True)
+def _no_env_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The VM sets SWF_SANDBOX_RUNTIME=runsc; these checks assume the unset default."""
+    monkeypatch.delenv("SWF_SANDBOX_RUNTIME", raising=False)
+
+
 def spec_for(ws: Path, **overrides: Any) -> SandboxSpec:
     fields: dict[str, Any] = {
         "task_id": "task-1",

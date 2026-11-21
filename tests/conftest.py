@@ -301,7 +301,27 @@ def _docker_unavailable_reason() -> str | None:
     return None
 
 
+def _gvisor_available() -> bool:
+    if os.environ.get("SWF_SANDBOX_RUNTIME") != "runsc":
+        return False
+    try:
+        run = subprocess.run(
+            ["docker", "info", "--format", "{{json .Runtimes}}"],
+            capture_output=True, text=True, timeout=30,
+        )  # fmt: skip
+        return run.returncode == 0 and "runsc" in json.loads(run.stdout.strip() or "{}")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    gvisor_items = [i for i in items if i.get_closest_marker("gvisor")]
+    if gvisor_items and not _gvisor_available():
+        skip_gv = pytest.mark.skip(
+            reason="gVisor unavailable (SWF_SANDBOX_RUNTIME!=runsc or runsc not in docker info)"
+        )
+        for item in gvisor_items:
+            item.add_marker(skip_gv)
     docker_items = [i for i in items if i.get_closest_marker("docker")]
     if docker_items:
         reason = _docker_unavailable_reason()
