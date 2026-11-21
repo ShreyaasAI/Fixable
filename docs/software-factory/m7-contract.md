@@ -468,3 +468,7 @@ Ownership: the coder adds `src/swf/agent/model.py` to its files; the tester adds
 ### A4 AGENTS.md setup gating stays deferred (§0.14, §12)
 
 [D, user] Unchanged: deferred.
+
+### A5 Judge budget and overload backoff (§0.8) — 2026-11-21, check loop
+
+[D, lead] glm-4.7-flash always reasons first; at `max_tokens=400` replies came back empty (`finish_reason="length"`, 85/102 live items → `guard_error`). §0.8 becomes: `max_tokens=2000`, `timeout=120`. Provider overload (HTTP 429/503) retries with 10/20/30 s backoff, up to 3 times, without consuming one of the `max_attempts=2`. Verdict parse accepts unquoted `reason` when `injection`/`toxicity`/`malicious` are plain booleans; missing field, wrong type or no JSON still fail. Fail-closed unchanged. Latency cost: 6–25 s per judged text, up to ~55 s under provider queueing.
