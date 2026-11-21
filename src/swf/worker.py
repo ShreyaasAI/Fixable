@@ -13,6 +13,10 @@ M6 (m6-contract §7): `GitHubWorkspace` clones the repo in `preparing` (≤ max_
 `clone_failed`); with a `RunnerDeps.publisher`, a confirmed task goes through `opening_pr`: the
 evidence patch is applied to a fresh clone, pushed to `agent/<task-id>` and opened as a PR.
 
+M8 (m8-contract §0.10, §0.12, §1.7): a task starts only with cost budget left, and the agent's
+`cost_limit` is capped by it. A stop loop kills (`docker rm -f` + task network) the runners whose
+task went terminal (admin kill, user cancel); a lost lease or a reap kills the same way.
+
 Run: `uv run python -m swf.worker` (`SWF_LOCAL_SOURCE` = copy a local directory, no PR; dev).
 """
 
@@ -73,6 +77,7 @@ from swf.pr import (
     render_pr_body,
 )
 from swf.preflight import Limits
+from swf.settings import AbuseLimits
 
 logger = logging.getLogger("swf.worker")
 
@@ -158,6 +163,8 @@ class WorkerConfig:
     agent: dict[str, Any] = field(default_factory=dict)
     lease_seconds: int = 90
     heartbeat_seconds: int = 30
+    abuse: AbuseLimits = field(default_factory=AbuseLimits)
+    stop_poll_seconds: float = 5.0  # m8 §0.12: kill switch / cancel -> container gone in 30 s
 
     def __post_init__(self) -> None:
         if not _WORKER_ID_RE.fullmatch(self.worker_id):
@@ -166,6 +173,8 @@ class WorkerConfig:
             raise ValueError("heartbeat_seconds * 2 must be < lease_seconds")
         if self.max_concurrent < 1:
             raise ValueError("max_concurrent must be >= 1")
+        if not 0 < self.stop_poll_seconds <= 10:
+            raise ValueError("stop_poll_seconds must be > 0 and <= 10")
 
 
 @dataclass
@@ -261,10 +270,32 @@ class TaskRunner:
         self.workspace: TaskWorkspace | None = None
         self.harness: TaskHarness | None = None
         self.test_command: str | None = None
+        self._env_lock = threading.Lock()  # kill() (another thread) vs the runner's cleanup
+        self._env_released = False
 
     def stop(self) -> None:
-        """Lost lease or worker shutdown: stop at the next check, never write a status."""
+        """Worker shutdown: stop at the next check, never write a status."""
         self.stopped = True
+
+    def kill(self) -> None:
+        """Kill switch / cancel / lost lease (m8 §0.12): stop, and remove the container now.
+
+        Safe to call twice and from another thread. An in-flight `docker exec` then returns and
+        the runner exits at its next status check, writing nothing.
+        """
+        self.stopped = True
+        try:
+            self._release_env()
+        except Exception:
+            logger.exception("killing task %s failed", self.task.id)
+
+    def _release_env(self) -> None:
+        """`env.cleanup()` (container + task network) once, whichever thread comes first."""
+        with self._env_lock:
+            env = self.env
+            if env is not None and not self._env_released:
+                env.cleanup()
+                self._env_released = True  # a failed cleanup is retried by the next caller
 
     # --- run -------------------------------------------------------------------------------
 
@@ -287,6 +318,10 @@ class TaskRunner:
 
     def _run(self) -> None:
         deps, task, channel = self.deps, self.task, self.channel
+        with deps.db.backend() as conn:  # m8 §0.10: no budget left -> no container
+            budget = store.task_cost_budget(conn, task.id, deps.config.abuse)
+        if budget <= 0:
+            raise _TaskFailed("quota_cost_per_day")
         self.workspace = ws = self._prepare_workspace()
         if ws.base_sha:
             channel.emit(
@@ -358,6 +393,8 @@ class TaskRunner:
             "failing_test": task.failing_test,
             **deps.config.agent,
         }
+        configured = float(agent_kwargs.get("cost_limit") or 0.0)
+        agent_kwargs["cost_limit"] = budget if configured <= 0 else min(configured, budget)
         guard = deps.guard_factory() if deps.guard_factory else Guardrails.off()
         self.agent = WebAgent(
             deps.model_factory(),
@@ -535,6 +572,8 @@ class TaskRunner:
             except (states.TaskFinished, AgentExit):
                 raise
             except Exception as exc:
+                if self.stopped:  # killed: the failure is the removed container; no retry
+                    raise TaskStopped() from exc
                 error = f"{type(exc).__name__}: {exc}"
                 self.channel.emit("retry", {"step": step, "attempt": attempt, "error": error})
                 if attempt < cfg.max_retries:
@@ -565,11 +604,10 @@ class TaskRunner:
             self.channel.transition("failed", error=error[:10000])
 
     def _cleanup(self) -> None:
-        if self.env is not None:
-            try:
-                self.env.cleanup()
-            except Exception:
-                logger.exception("cleanup of task %s failed", self.task.id)
+        try:
+            self._release_env()
+        except Exception:
+            logger.exception("cleanup of task %s failed", self.task.id)
         if self.agent is not None and self.workspace is not None:
             try:
                 self.agent.save(self.workspace.root / "trajectory.json")
@@ -609,11 +647,10 @@ class Worker:
             reaped = store.interrupt_orphans(conn, worker_id=cfg.worker_id, restart=restart)
         ids = [task_id for task_id, _ in reaped]
         with self._lock:
-            for task_id in ids:
-                runner = self.running.get(task_id)
-                if runner is not None:
-                    runner.stop()
+            runners = [self.running[t] for t in ids if t in self.running]
             active = [str(t) for t in self.running if t not in ids]
+        for runner in runners:  # outside the lock: kill() waits for `docker rm -f`
+            runner.kill()
         self.orphan_cleaner(active, worker_id=cfg.worker_id, reap_task_ids=[str(t) for t in ids])
         return ids
 
@@ -631,11 +668,23 @@ class Worker:
             )
         lost = [t for t in ids if t not in kept]
         with self._lock:
-            for task_id in lost:
-                runner = self.running.get(task_id)
-                if runner is not None:
-                    runner.stop()
+            runners = [self.running[t] for t in lost if t in self.running]
+        for runner in runners:
+            runner.kill()
         return lost
+
+    def enforce_stops(self) -> list[uuid.UUID]:
+        """Kill the runners whose task went terminal (admin kill, user cancel; m8 §0.12)."""
+        ids = self._running_ids()
+        if not ids:
+            return []
+        with self.deps.db.backend() as conn:
+            stopped = store.stopped_task_ids(conn, ids)
+        with self._lock:
+            runners = [self.running[t] for t in stopped if t in self.running]
+        for runner in runners:
+            runner.kill()
+        return stopped
 
     def claim(self) -> store.Task | None:
         cfg = self.deps.config
@@ -651,6 +700,23 @@ class Worker:
             except Exception:
                 logger.exception("heartbeat failed")
 
+    def _stop_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(self.deps.config.stop_poll_seconds):
+            try:
+                self.enforce_stops()
+            except Exception:
+                logger.exception("stop loop failed")
+
+    def _background(self, stop: threading.Event) -> list[threading.Thread]:
+        """Start the heartbeat and stop-loop threads; both end when `stop` is set."""
+        threads = [
+            threading.Thread(target=self._heartbeat_loop, args=(stop,), daemon=True),
+            threading.Thread(target=self._stop_loop, args=(stop,), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        return threads
+
     def run_once(self) -> uuid.UUID | None:
         """Claim one task and run it synchronously, holding its lease (tests)."""
         task = self.claim()
@@ -660,13 +726,13 @@ class Worker:
         with self._lock:
             self.running[task.id] = runner
         stop = threading.Event()
-        beat = threading.Thread(target=self._heartbeat_loop, args=(stop,), daemon=True)
-        beat.start()
+        background = self._background(stop)
         try:
             runner.run()
         finally:
             stop.set()
-            beat.join()
+            for thread in background:
+                thread.join()
             with self._lock:
                 self.running.pop(task.id, None)
         return task.id
@@ -697,8 +763,7 @@ class Worker:
         cfg = self.deps.config
         self.reconcile(restart=True)
         beat_stop = threading.Event()
-        beat = threading.Thread(target=self._heartbeat_loop, args=(beat_stop,), daemon=True)
-        beat.start()
+        background = self._background(beat_stop)
         last_reconcile = time.monotonic()
         try:
             while not stop.is_set():
@@ -728,7 +793,8 @@ class Worker:
             for thread in threads:
                 thread.join()
             beat_stop.set()
-            beat.join()
+            for thread in background:
+                thread.join()
 
 
 # --- entry point ---------------------------------------------------------------------------
@@ -744,17 +810,24 @@ def main() -> None:
     from swf.github import GitHubClient
     from swf.gitops import GitOps
     from swf.pr import GitHubPublisher, GitHubWorkspace, db_token_source
-    from swf.sandbox import cleanup_orphans, open_task_sandbox
+    from swf.sandbox import check_runtime, cleanup_orphans, open_task_sandbox, runtime_from_env
     from swf.settings import Settings
     from swf.tokens import TokenCipher
 
     settings = Settings.from_env()
     Guardrails.from_env()  # fail fast: MissingApiKey exits before any task is claimed
+    abuse = AbuseLimits.from_env()
+    runtime = runtime_from_env()
+    if runtime is not None:  # m8 §1.7: fail fast when docker lacks the runtime
+        check_runtime(runtime)
+    logger.info("sandbox runtime: %s", runtime or "docker default")
     source = os.environ.get("SWF_LOCAL_SOURCE")
     workspaces_root = Path(os.environ.get("SWF_WORKSPACES_ROOT") or "./workspaces").resolve()
     egress = EgressConfig()
     ensure_egress(egress)
-    config = WorkerConfig(worker_id=default_worker_id(), workspaces_root=workspaces_root)
+    config = WorkerConfig(
+        worker_id=default_worker_id(), workspaces_root=workspaces_root, abuse=abuse
+    )
     db = Database(settings.database_url, max_size=config.max_concurrent * 2 + 2)
     db.open()
 
