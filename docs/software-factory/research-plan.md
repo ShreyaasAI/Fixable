@@ -43,6 +43,7 @@ Labels: **[D]** decision (from the spec) · **[V]** verified on 2026-11-19 · **
 
 ### 2.4 Guardrails AI hub [V, partial]
 - Relevant validators: PII (likely local, Presidio-based [U]), toxic language (ML), secrets (rule-based); injection validators are model-based. The user reports its injection accuracy is overstated → injection checks go to a free LLM instead [D].
+- [D, 2026-11-21] Not used. M7 uses a glm-4.7-flash judge (injection, toxicity, malicious) and in-process regex (PII, secrets). See `m7-contract.md` §0, §13.
 
 ### 2.5 Harness guidance (Anthropic) [V]
 - Agents declare victory early → evidence before completion; prefer end-to-end checks; keep progress outside the context.
@@ -110,7 +111,7 @@ No persistent shell (`cd`/`export` don't persist) → state it in the prompt · 
 5. **Classifier [D]:** bash parsed per simple command; unparseable, `eval`, subshells, interpreter `-c` → approval; `rm -rf` and DB drops always forbidden.
 6. **Read-only backstop [D]:** workspace snapshot at investigate start; any change at `submit_plan` → block.
 7. **Guardrails [D]:**
-   - Input (issue text, `AGENTS.md`, tool observations): a free LLM checks for injection; Guardrails AI checks PII, toxicity and malicious intent.
+   - Input (issue text, `AGENTS.md`, tool observations): a free LLM (`zai/glm-4.7-flash`) judges injection, toxicity and malicious intent; in-process regex checks PII and secrets [D, 2026-11-21; Guardrails AI dropped].
    - Output (model responses/tool args): Portkey regex + JSON schema.
    - Any flag → event + user approval before the next command.
 8. **Container hardening:** non-root, `--cap-drop ALL`, `no-new-privileges`, pids/memory/CPU limits, no Docker socket.
@@ -161,7 +162,7 @@ Browser ──REST/SSE──▶ API (FastAPI, Python)
                  ├─ WebAgent(DefaultAgent): phases, tools, approvals, retries ≤3, events
                  ├─ PhaseModel: beam-free (investigate/plan) ↔ glm-4.7-flash (execute/verify) via Portkey
                  │     └─ Portkey output guardrails (regex, JSON schema)
-                 ├─ InputGuard: free-LLM injection check + Guardrails AI (PII, toxicity, malicious intent)
+                 ├─ InputGuard: free-LLM judge (injection, toxicity, malicious) + in-process regex (PII, secrets)
                  ├─ CommandClassifier (bash parser)
                  ├─ SandboxEnv(DockerEnvironment): tools, hardening, read-only backstop
                  └─ EvidenceService: bundle check + harness re-run of the target test
@@ -206,6 +207,8 @@ Web IDE (browser, editor, terminal) · cloud memory/preferences · Free/Pro plan
 
 1. Live updates via SSE (default) or Supabase Realtime?
 2. Does Portkey's free plan include output guardrails (regex/JSON schema)? If not → enforce the same checks in-process [A].
+
+Resolved 2026-11-21 (RQ7, RQ8): the free plan supports saved regex and JSON-schema output guardrails (`pg-swf-m7-c8f3fc`, config `pc-swf-m7-d1cf5c`); inline configs are blocked. Used opt-in; the in-process output guard stays mandatory. Live corpus (102 items): injection 91%, toxicity/malicious/pii/secret 100%, clean FP 0%; judge p95 50 s vs the ≤500 ms target (open risk).
 
 Resolved 2026-11-19: quotas 5 tasks/day, $1/task, $3/day, 1 concurrent per user; zero-cost hosting = Oracle Always Free Arm (2 OCPU/12 GB, 2 concurrent tasks) + Supabase Free.
 

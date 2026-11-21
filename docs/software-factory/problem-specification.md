@@ -1,7 +1,7 @@
 # Web Coding Agent — Problem Specification (v2)
 
 - **Purpose:** Define *what* the MVP must do and *why*, precisely enough that a new session can plan and build it without the original transcript.
-- **Last updated:** 2026-11-20
+- **Last updated:** 2026-11-21
 - **Status:** Approved (v2, 2026-11-19 — supersedes v1). Zero-cost constraint applied 2026-11-19
 - **Related artifacts:** `docs/software-factory/research-plan.md` (Approved) · `docs/software-factory/implementation-plan.md` (Under review) · `PROMPT.md` (process rules) · `system_prompts/Cursor_*` (agent prompt baseline)
 
@@ -59,6 +59,7 @@ The harness re-runs the target test once to confirm. The backend applies the dif
    - **Input:** a free LLM (`zai/glm-4.7-flash`) screens for prompt injection; Guardrails AI checks for PII, toxicity and malicious intent (hacking, trespassing).
    - **Output:** Portkey guardrails apply regex matching and JSON schema validation to model output.
    - **On a flag:** tell the user and require approval before the next command.
+   - **Deviation (2026-11-21, user):** Guardrails AI is not used (also moots §13 assumption 3). Input = `zai/glm-4.7-flash` judge (injection, toxicity, malicious intent) + in-process regex (PII, secrets); emails are not PII. Output = in-process guard (mandatory) + opt-in Portkey saved guardrail. See `m7-contract.md` §13.
 9. Models [D]:
    - **Reasoning:** `baidu/ernie-5.5-flash-preview:free` (investigate + plan; replaced `opencode_go/beam-free`, user 2026-11-20).
    - **Tool execution:** `zai/glm-4.7-flash` (execute + verify).

@@ -16,25 +16,25 @@
 | M2 sandbox, egress proxy, pre-flight | **Built, committed `1296b28` on `feature/m2-sandbox-preflight-1120a`**, user said complete (2026-11-20). Contract: `docs/software-factory/m2-contract.md` |
 | M3 command classifier + phase policy | **Built, committed `1296b28` on `feature/m2-sandbox-preflight-1120a`**, user said complete (2026-11-20). Corpus 260 cmds, 0 forbidden bypasses |
 | M4 WebAgent, tools, approvals, model switch, worker | **Approved (user, 2026-11-20), committed on the feature branch**. 415 M4 tests passed; live 2-model Portkey smoke passed ($0); contract `docs/software-factory/m4-contract.md` |
-| M5 evidence, harness re-run, read-only backstop | **Implemented, awaiting user review** (2026-11-21). Contract `docs/software-factory/m5-contract.md` (§12 amendments override §0–§8). Evidence: see M5 close-out |
-| M6 GitHub clone, clean-clone apply, PR | **Implemented, awaiting user review** (2026-11-21). Live PR: https://github.com/ShreyaasAI/swf-pr-sandbox/pull/1 (open, not merged). Contract `docs/software-factory/m6-contract.md`. Evidence: see M6 close-out |
-| M7–M10 | Not started |
+| M5 evidence, harness re-run, read-only backstop | **Approved, merged to `main`** (`1235cdc`). Contract `docs/software-factory/m5-contract.md` (§12 amendments override §0–§8) |
+| M6 GitHub clone, clean-clone apply, PR | **Approved, merged to `main`** (`1235cdc`). Live PR: https://github.com/ShreyaasAI/swf-pr-sandbox/pull/1. Contract `docs/software-factory/m6-contract.md` |
+| M7 guardrails (input judge + regex, output guard, Portkey opt-in) | **Implemented on `m7-check`, not merged, awaiting user review** (2026-11-21). Contract `docs/software-factory/m7-contract.md` (§13 A1–A5 override §0–§12). Results: implementation-plan §18 M7 |
+| M8–M10 | Not started |
 
-Repo state: M2 + M3 committed as `1296b28` on `feature/m2-sandbox-preflight-1120a` (worktree `.claude/worktrees/m2-sandbox-preflight-1120a`); M4 committed there too. `main` still at `e2a9863` ("M0 + M1: …", 98 files). `origin` is not configured (the GitHub repo `https://github.com/ShreyaasAI/Fixable.git` is not a remote), and nothing is pushed. **Do not push until M9 is complete** (user). A new session must work in the worktree (or ask the user), not on `main`. Docker Desktop is running on the dev machine (x86_64).
-
-**Warning:** the main checkout's `.env` is untracked and not ignored on `main` until this branch merges. Never `git add -A` on `main`.
+Repo state: `main` = `1235cdc`, contains M0–M6. M7 is on branch `m7-check` (worktree `.claude/worktrees/m7-check`), not merged to `main`. **Do not push until M9 is complete** (user). Work in a worktree, not on `main`. Main checkout's `.env` is untracked: never `git add -A` on `main`. Docker Desktop is running on the dev machine (x86_64).
 
 ## Waiting on the user
 
 Pending now:
-1. Review M5 (evidence, harness re-run, backstop) and M6 (GitHub clone, clean-clone apply, PR). Approve to start M7.
-2. Whether to merge `feature/m2-sandbox-preflight-1120a` (M2–M4) into `main` (no push before M9).
+1. Review M7 (guardrails, `m7-check`). Approve to commit and merge M7 to `main`, then start M8.
+
+Open risk (M7): guard latency p50 6.2 s, p95 50 s per judged text, far above research-plan A3 target (≤500 ms). Accepted for now; parallel judging and budget deferred (m7-contract §12).
 
 Settled: the Supabase Free project is created in M8 (local Postgres until then); the GitHub token comes in via `POST /v1/me/github-token`; the M2 decisions (Squid proxy, package cache deferred to M9, over-limit estimates rejected at creation, 1 vCPU / 4 GB per task) are in `m2-contract.md` §0.
 
 ## Next action
 
-M6 implemented (2026-11-21), awaiting user review. On approval, start **M7** (guardrails) from implementation-plan §18. No push before M9.
+M7 implemented on `m7-check` (2026-11-21), awaiting user review. On approval: commit and merge M7 to `main`, then start **M8** (abuse controls + gVisor) from implementation-plan §18. No push before M9.
 
 ## Reading guide
 
@@ -49,6 +49,7 @@ Read by need, not front to back:
 | M4 interfaces and amendments (working contract) | `docs/software-factory/m4-contract.md` — §12 amendments override §0–§11 |
 | M5 interfaces and amendments (working contract) | `docs/software-factory/m5-contract.md` — §12 amendments override §0–§8 |
 | M6 interfaces and decisions (working contract) | `docs/software-factory/m6-contract.md` — §0 decisions; §4 `swf.pr`; §11 deferred |
+| M7 interfaces, decisions and amendments (working contract) | `docs/software-factory/m7-contract.md` — §13 amendments A1–A5 override §0–§12; §11 close-out |
 | The original process rules from the user | `PROMPT.md` |
 | Baseline for the agent's system prompt | `system_prompts/Cursor_*` (adapt the behavioural rules; the tool schemas don't apply) |
 

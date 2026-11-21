@@ -2,7 +2,7 @@
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
 - **Last updated:** 2026-11-21
-- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 implemented, awaiting user review (2026-11-21); M6 implemented, awaiting user review (2026-11-21)
+- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 and M6 approved, merged to `main` (`1235cdc`); M7 implemented on `m7-check`, awaiting user review (2026-11-21)
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
 Labels: **[D]** confirmed decision · **[A]** assumption · **[Q]** open question. Nothing here goes beyond the approved spec; roadmap items are listed only as non-goals.
@@ -47,7 +47,7 @@ Open beta, GitHub sign-in → pick a repo → describe a bug or failing test →
 | `swf.agent` | `WebAgent(DefaultAgent)`, `PhaseModel`, tools, approvals, retries, events | M4 |
 | `swf.evidence` | Evidence bundle, harness re-run, read-only backstop | M5 |
 | `swf.github` | Clone, clean-clone apply, push, PR | M6 |
-| `swf.guard` | Input (free LLM + Guardrails AI) and output (Portkey) guardrails | M7 |
+| `swf.guard` | Input (glm-4.7-flash judge + in-process regex for PII/secrets) and output (in-process guard; Portkey saved guardrail opt-in) | M7 |
 | `swf.worker` | Queue claim, admission, task runner, restart reconciliation | M4–M5 |
 | `web/` | Minimal UI | M10 |
 
@@ -267,8 +267,9 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - Deferred: `DELETE /v1/tasks/{id}` → M10; Linux workspace chown → M9; `can_push` pre-check → M8.
 
 ### M7 — Guardrails
-- [ ] Tests: seeded injection/PII/toxic/malicious corpus flagged; flag → approval required for the next command; malformed output caught by the output guard (Portkey or in-process fallback)
+- [x] Tests: seeded injection/PII/toxic/malicious corpus flagged; flag → approval required for the next command; malformed output caught by the output guard (Portkey or in-process fallback)
 - **DoD:** corpus results table with false-positive rate on the clean corpus.
+- **Result (2026-11-21, `m7-check`, awaiting review):** non-live 238 passed; live 3 passed; ruff/format/mypy clean. Live corpus (102 items): injection 20/22 (91%), toxicity 12/12, malicious 14/14, pii 12/12, secret 10/10; clean FP 0/32 (0%); guard_error 1; latency p50 6.2 s, p95 50 s, max 194 s per judged text. Open risk: latency misses research-plan A3 target (≤500 ms). Amendments: `m7-contract.md` §13.
 
 ### M8 — Abuse controls + gVisor
 - [ ] Tests: over-quota refused pre-start; 429 rate limiting; kill switch stops tasks ≤ 30 s; sandbox suite passes under `runsc`
@@ -287,5 +288,5 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 
 1. ~~Idle-approval timeout default (proposed 24 h).~~ — resolved: 24 h [D, 2026-11-20].
 2. SSE (default) vs Supabase Realtime for live updates.
-3. Portkey free-plan guardrail availability (else in-process output checks).
+3. ~~Portkey free-plan guardrail availability (else in-process output checks).~~ — resolved 2026-11-21 [D]: free plan supports saved regex and JSON-schema output guardrails (`pg-swf-m7-c8f3fc`, config `pc-swf-m7-d1cf5c`); used opt-in via `SWF_PORTKEY_CONFIG`; in-process output guard stays mandatory (`m7-contract.md` §13 A1).
 4. ~~Language mix of seeded repos~~ — resolved: Python only [D].
