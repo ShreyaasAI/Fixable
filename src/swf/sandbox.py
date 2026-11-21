@@ -28,11 +28,13 @@ escape). `_check_finished` is a no-op: only the backend `complete_task` tool end
 from __future__ import annotations
 
 import contextlib
+import json
+import os
 import subprocess
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from minisweagent.environments.docker import DockerEnvironment
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -51,6 +53,45 @@ if TYPE_CHECKING:
 WORKSPACE_TARGET = "/repo"
 _RM_TIMEOUT_SECONDS = 60
 _LIMITS = Limits()
+RUNTIMES = frozenset({"runc", "runsc"})
+Runtime = Literal["runc", "runsc"]
+
+
+class SandboxRuntimeError(Exception):
+    pass
+
+
+def runtime_from_env(env: Mapping[str, str] | None = None) -> Runtime | None:
+    """`SWF_SANDBOX_RUNTIME`: blank or unset -> None (Docker's default); else runc|runsc."""
+    e = os.environ if env is None else env
+    raw = (e.get("SWF_SANDBOX_RUNTIME") or "").strip()
+    if not raw:
+        return None
+    if raw not in RUNTIMES:
+        raise ValueError(f"SWF_SANDBOX_RUNTIME must be one of {sorted(RUNTIMES)}, got {raw!r}")
+    return cast(Runtime, raw)
+
+
+def parse_runtimes(info_json: str) -> frozenset[str]:
+    """Runtime names from `docker info --format '{{json .Runtimes}}'`."""
+    return frozenset(json.loads(info_json))
+
+
+def check_runtime(runtime: str, *, docker: str = "docker") -> None:
+    """Raise SandboxRuntimeError unless the Docker daemon lists `runtime`."""
+    info = subprocess.run(
+        [docker, "info", "--format", "{{json .Runtimes}}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    try:
+        runtimes = parse_runtimes(info.stdout.strip()) if info.returncode == 0 else frozenset()
+    except ValueError:
+        runtimes = frozenset()
+    if runtime not in runtimes:
+        raise SandboxRuntimeError(f"docker runtime {runtime!r} not available")
 
 
 class SandboxSpec(BaseModel):
@@ -65,7 +106,7 @@ class SandboxSpec(BaseModel):
     cpus: float = Field(default=1.0, gt=0, le=_LIMITS.task_cpus)
     pids_limit: int = Field(default=512, gt=0)
     user: str = "1000:1000"
-    runtime: str | None = None
+    runtime: Runtime | None = Field(default_factory=runtime_from_env)
     command_timeout: int = 300
     container_timeout: str = "2h"
     worker_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,64}$")
