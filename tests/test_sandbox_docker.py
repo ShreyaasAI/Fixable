@@ -31,7 +31,7 @@ from swf.egress import (
     render_squid_conf,
     teardown_egress,
 )
-from swf.sandbox import SandboxEnv, SandboxSpec, cleanup_orphans
+from swf.sandbox import SandboxEnv, SandboxSpec, cleanup_orphans, runtime_from_env
 
 pytestmark = pytest.mark.docker
 
@@ -278,6 +278,11 @@ def test_pids_limit_caps_process_count(sandboxes: MakeSandbox, plain_network: st
         "    p.kill()\n"
     )
     out = py(env, script)
+    if runtime_from_env() == "runsc" and out["returncode"] != 0:
+        # gVisor: the host pids cgroup also counts the Sentry's threads, so hitting the cap
+        # can end the whole sandbox (exec wait fails with EOF). Contained either way (m8 A5).
+        assert "WaitPID" in out["output"] or "EOF" in out["output"], out
+        return
     assert out["returncode"] == 0, out
     started, failed = (int(x) for x in out["output"].split()[-2:])
     assert failed > 0
