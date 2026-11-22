@@ -83,8 +83,13 @@ class EgressError(Exception):
     pass
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _default_pkgcache_dir() -> Path:
-    return Path(os.environ.get("SWF_PKGCACHE_DIR") or "pkgcache").resolve()
+    """`SWF_PKGCACHE_DIR`, else `<repo root>/pkgcache` (never the cwd: every process that
+    starts the cache must compute the same dir, or the conf-sha differs)."""
+    return Path(os.environ.get("SWF_PKGCACHE_DIR") or REPO_ROOT / "pkgcache").resolve()
 
 
 class EgressConfig(BaseModel):
@@ -292,6 +297,8 @@ def _ensure_egress_network(cfg: EgressConfig, docker: str) -> None:
         net = _inspect(docker, "network", name)
     if net is None or not net.get("Internal"):
         raise EgressError(f"network {name} exists but is not --internal")
+    if (net.get("Labels") or {}).get(LABEL_EGRESS) != "1":
+        raise EgressError(f"network {name} exists but has no {LABEL_EGRESS}=1 label")
 
 
 def _pkgcache_sha(cfg: EgressConfig, proxy_url: str, user: str) -> str:

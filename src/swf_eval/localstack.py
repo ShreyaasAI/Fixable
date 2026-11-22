@@ -153,6 +153,8 @@ class LocalStack:
         """The API/worker env, built from scratch (§0.17)."""
         from cryptography.fernet import Fernet
 
+        from swf.egress import EgressConfig
+
         extra = {k: os.environ[k] for k in _PLATFORM_ENV if os.environ.get(k)}
         extra.update(
             {
@@ -161,6 +163,8 @@ class LocalStack:
                 "SWF_SUPABASE_JWT_SECRET": self.secret,
                 "SWF_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode(),
                 "SWF_WORKSPACES_ROOT": str(self.run_dir / "workspaces"),
+                # the harness's own cache dir, so the worker computes the same conf-sha
+                "SWF_PKGCACHE_DIR": str(EgressConfig().pkgcache_dir),
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
         )

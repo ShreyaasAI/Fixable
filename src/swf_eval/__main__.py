@@ -10,6 +10,7 @@ import argparse
 import dataclasses
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,8 +37,19 @@ if TYPE_CHECKING:
 
 EVAL_MODEL = "@glm-4-7-flash/glm-4.7-flash"
 AGENT_LIMITS = {"step_limit": 80, "wall_time_limit_seconds": 1800}
-INFRA_ERRORS = ("clone_failed", "pr_failed", "docker")
+# Infra failures get one re-run (§0.13); agent outcomes never do (`pr_failed: empty_diff`,
+# `pr_failed: unsupported_change: ...`, limits, retries_exhausted, any other internal_error).
+_INFRA_RE = re.compile(
+    r"^(?:clone_failed"
+    r"|pr_failed: (?!empty_diff$|unsupported_change\b)[a-z_]+"
+    r"|internal_error: (?:EgressError|Sandbox[A-Za-z]*Error))$",
+    re.ASCII,
+)
 BUDGET_CHECK_SECONDS = 30.0
+
+
+def is_infra_failure(status: str, error: str | None) -> bool:
+    return status == "failed" and bool(_INFRA_RE.fullmatch(error or ""))
 
 
 class EvalError(Exception):
@@ -247,6 +259,44 @@ class RunState:
     replaced: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     notes: list[str] = dataclasses.field(default_factory=list)
     aborted: str | None = None
+    out: Path | None = None  # run dir: run.json and tasks/ are rewritten as tasks finish
+    info: dict[str, Any] = dataclasses.field(default_factory=dict)
+    records: dict[str, TaskRecord] = dataclasses.field(default_factory=dict)
+
+    def note(self, text: str) -> None:
+        with self.lock:
+            self.notes.append(text)
+        self.write_run()
+
+    def persist(self, record: TaskRecord) -> None:
+        """Write the task file and run.json now, so a crash later loses nothing recorded."""
+        with self.lock:
+            self.records[record.task_id] = record
+            if self.out is not None:
+                write_json(task_file(self.out, record), record_to_json(record))
+        self.write_run()
+
+    def write_run(self) -> None:
+        if self.out is None:
+            return
+        with self.lock:
+            kept = [r for tid, r in self.records.items() if tid in self.ids]
+            data = {
+                **self.info,
+                "aborted": self.aborted,
+                "ids": dict(self.ids),
+                "pr_urls": {r.task_id: r.pr_url for r in kept if r.pr_url},
+                "replaced": list(self.replaced),
+                "notes": list(self.notes),
+                "tasks": sorted({task_file(self.out, r).name for r in kept}),
+                "budget": {
+                    "usd": self.budget.usd,
+                    "calls": self.budget.calls,
+                    "prs": self.budget.prs,
+                    "elapsed_seconds": round(self.budget.elapsed(), 1),
+                },
+            }
+            write_json(self.out / "run.json", data)
 
     def check(self) -> bool:
         """True (and record the reason) once any hard stop is reached."""
@@ -283,11 +333,11 @@ def run_task(state: RunState, pass_: Pass, seed: Seed, user: str) -> TaskRecord 
             failing_test=seed.target_test,
         )
     except CreateRefused as exc:
-        with state.lock:
-            state.notes.append(f"{pass_} {seed.name}: create refused ({exc.status} {exc.detail})")
+        state.note(f"{pass_} {seed.name}: create refused ({exc.status} {exc.detail})")
         return None
     with state.lock:
         state.ids[str(task_id)] = (pass_, seed.name, user)
+    state.write_run()
     deadline = time.monotonic() + AGENT_LIMITS["wall_time_limit_seconds"] + 900
     client.drive(task_id, deadline=deadline, stop=_throttled(state.check, BUDGET_CHECK_SECONDS))
     with connect(state.db_url) as conn:
@@ -305,25 +355,32 @@ def run_task(state: RunState, pass_: Pass, seed: Seed, user: str) -> TaskRecord 
 
 
 def drive_jobs(state: RunState, pass_: Pass, jobs: Sequence[tuple[Seed, str]]) -> None:
-    """Sequential jobs; an infra failure gets one re-run that replaces the record (§0.13)."""
-    for seed, user in jobs:
-        for attempt in (1, 2):
-            if state.check():
-                return
-            record = run_task(state, pass_, seed, user)
-            error = (record.error or "") if record else ""
-            infra = (
-                record is not None and record.status == "failed" and error.startswith(INFRA_ERRORS)
-            )
-            if not infra or attempt == 2:
-                break
-            assert record is not None
-            with state.lock:
-                state.ids.pop(record.task_id, None)
-                state.replaced.append(
-                    {"pass": pass_, "seed": seed.name, "task_id": record.task_id,
-                     "cause": error, "status": record.status}
-                )  # fmt: skip
+    """Sequential jobs; an infra failure gets one re-run that replaces the record (§0.13).
+
+    Each record is persisted as it finishes. An exception ends this thread's jobs with a note;
+    the other driver thread and the run's final write still happen."""
+    seed_name = ""
+    try:
+        for seed, user in jobs:
+            seed_name = seed.name
+            for attempt in (1, 2):
+                if state.check():
+                    return
+                record = run_task(state, pass_, seed, user)
+                if record is None:
+                    break
+                state.persist(record)
+                if not is_infra_failure(record.status, record.error) or attempt == 2:
+                    break
+                with state.lock:
+                    state.ids.pop(record.task_id, None)
+                    state.replaced.append(
+                        {"pass": pass_, "seed": seed.name, "task_id": record.task_id,
+                         "cause": record.error, "status": record.status}
+                    )  # fmt: skip
+                state.write_run()
+    except Exception as exc:
+        state.note(f"{pass_} {seed_name}: driver stopped: {type(exc).__name__}: {exc}")
 
 
 def guard_flags(conn: Any, ids: dict[str, tuple[Pass, str, str]]) -> list[dict[str, str]]:
@@ -357,13 +414,15 @@ def scan_for_secrets(out: Path, secrets: Sequence[str]) -> list[str]:
     return hits
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    import httpx
+def secrets_ok(out: Path, secrets: Sequence[str]) -> bool:
+    hits = scan_for_secrets(out, secrets)
+    if hits:
+        print(f"secret found in the run dir: {', '.join(hits)}", file=sys.stderr)
+    return not hits
 
+
+def cmd_run(args: argparse.Namespace) -> int:
     from swf.github import GitHubClient
-    from swf_eval.client import EvalClient
-    from swf_eval.localstack import LocalStack, connect
-    from swf_eval.metrics import records_from_db
 
     repo = check_eval_repo(args.repo)
     out = Path(args.out)
@@ -401,19 +460,45 @@ def cmd_run(args: argparse.Namespace) -> int:
         "host": host,
         "model": EVAL_MODEL,
         "agent_limits": AGENT_LIMITS,
-        "notes": [],
         "cleanup": [],
     }
     controls = out / "controls.json"
     info["controls"] = read_json(controls) if controls.exists() else []
+    state = RunState(repo=repo, db_url="", budget=budget, clients={}, out=out, info=info)
     sampler = MemSampler()
+    try:
+        return _run_passes(state, passes, seeds, token, portkey, gh_user, knobs, sampler)
+    finally:
+        state.write_run()
+
+
+def _run_passes(
+    state: RunState,
+    passes: Sequence[Pass],
+    seeds: Sequence[Seed],
+    token: str,
+    portkey: str,
+    gh_user: Any,
+    knobs: dict[str, str],
+    sampler: MemSampler,
+) -> int:
+    import httpx
+
+    from swf_eval.client import EvalClient
+    from swf_eval.localstack import LocalStack, connect
+    from swf_eval.metrics import records_from_db
+
+    assert state.out is not None
+    out = state.out
+    records: list[TaskRecord] = []
     with LocalStack(out, github_id=gh_user.id, github_login=gh_user.login, knobs=knobs) as stack:
+        state.db_url = stack.db_url
         http = {n: httpx.Client(base_url=stack.api_url, timeout=60.0) for n in stack.users}
         try:
             clients = {n: EvalClient(http[n], u.jwt) for n, u in stack.users.items()}
             for client in clients.values():
                 client.link_github_token(token)
-            state = RunState(repo=repo, db_url=stack.db_url, budget=budget, clients=clients)
+            state.clients = clients
             runner = runner_for(egress_up())
             sampler.start()
             for pass_ in passes:
@@ -437,30 +522,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             sampler.stop.set()
             with connect(stack.db_url) as conn:
                 records = records_from_db(conn, state.ids)
-                info["guard_flags"] = guard_flags(conn, state.ids)
+                state.info["guard_flags"] = guard_flags(conn, state.ids)
         finally:
             sampler.stop.set()
             for h in http.values():
                 h.close()
-    records = [dataclasses.replace(r, peak_mem_mb=sampler.peak.get(r.task_id)) for r in records]
     for r in records:
-        write_json(task_file(out, r), record_to_json(r))
-    info.update(
-        aborted=state.aborted,
-        replaced=state.replaced,
-        notes=state.notes,
-        tasks=[task_file(out, r).name for r in records],
-        budget={
-            "usd": budget.usd,
-            "calls": budget.calls,
-            "prs": budget.prs,
-            "elapsed_seconds": round(budget.elapsed(), 1),
-        },
-    )
-    write_json(out / "run.json", info)
-    hits = scan_for_secrets(out, [token, portkey])
-    if hits:
-        print(f"secret found in the run dir: {', '.join(hits)}", file=sys.stderr)
+        state.persist(dataclasses.replace(r, peak_mem_mb=sampler.peak.get(r.task_id)))
+    if not secrets_ok(out, [token, portkey]):
         return 1
     print(f"run written to {out} ({len(records)} tasks, aborted: {state.aborted or 'no'})")
     return 0
@@ -488,15 +557,24 @@ def cmd_check(args: argparse.Namespace) -> int:
     git = GitOps()
     runner = runner_for(egress_up())
     seeds = {s.name: s for s in load_seeds()}
+    failed = 0
     for r in todo:
         work = out / "check" / f"{r.pass_}-{r.seed}"
-        shutil.rmtree(work, ignore_errors=True)
-        git.clone(repo, f"agent/{r.task_id}", work / "pr", token=token)
-        res = check_resolution(seeds[r.seed], work / "pr", work / "trees", runner)
+        try:
+            shutil.rmtree(work, ignore_errors=True)
+            git.clone(repo, f"agent/{r.task_id}", work / "pr", token=token)
+            res = check_resolution(seeds[r.seed], work / "pr", work / "trees", runner)
+        except Exception as exc:  # one failed check must not stop the rest
+            failed += 1
+            msg = f"{type(exc).__name__}: {exc}".replace(token, "***")
+            print(f"{r.pass_} {r.seed}: check failed: {msg}", file=sys.stderr)
+            continue
         updated = dataclasses.replace(r, resolution=res)
         write_json(task_file(out, updated), record_to_json(updated))
         print(f"{r.pass_} {r.seed}: resolved {res.resolved}")
-    return 0
+    if not secrets_ok(out, [token, os.environ.get("PORTKEY_API_KEY") or ""]):
+        return 1
+    return 1 if failed else 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -543,7 +621,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     run["cleanup"] = [*(run.get("cleanup") or []), *log]
     write_json(out / "run.json", run)
     print("\n".join(log))
-    return 0
+    return 0 if secrets_ok(out, [token, os.environ.get("PORTKEY_API_KEY") or ""]) else 1
 
 
 # --- argparse ------------------------------------------------------------------------------

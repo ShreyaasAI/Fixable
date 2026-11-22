@@ -92,9 +92,9 @@ def push_seed_branch(git: GitOps, path: Path, branch: str, *, token: str) -> Non
 
 def _commit_seed(git: GitOps, seed: Seed, path: Path, branch: str) -> str:
     shutil.copytree(seed.repo_dir, path, ignore=IGNORE)
-    template = tempfile.mkdtemp(prefix="swf-eval-template-")
     opts = ["-c", "core.autocrlf=false", "-c", "core.safecrlf=false"]
-    git._run("init", [*opts, "init", "-q", f"--template={template}", "-b", branch], cwd=path)
+    with tempfile.TemporaryDirectory(prefix="swf-eval-template-") as template:
+        git._run("init", [*opts, "init", "-q", f"--template={template}", "-b", branch], cwd=path)
     git._run("add", [*opts, "add", "-A"], cwd=path)
     identity = {
         "GIT_AUTHOR_NAME": SEED_NAME,

@@ -7,7 +7,7 @@ import json
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,7 +47,14 @@ def _detail(resp: httpx.Response) -> str:
     return detail if isinstance(detail, str) else json.dumps(detail)
 
 
+class _Retry(Exception):
+    """An approval/answer POST failed: reconnect so its event is delivered again."""
+
+
 class EvalClient:
+    cancel_wait_seconds = 120.0  # after a cancel, wait this long for a terminal status
+    poll_seconds = 0.2
+
     def __init__(self, http: httpx.Client, jwt: str) -> None:
         self.http = http
         self._auth = {"Authorization": f"Bearer {jwt}"}
@@ -83,7 +90,7 @@ class EvalClient:
         if resp.status_code not in (200, 409):  # 409: already terminal
             resp.raise_for_status()
 
-    def _events(self, task_id: uuid.UUID, last_id: int | None) -> Iterator[_Event]:
+    def _events(self, task_id: uuid.UUID, last_id: int | None) -> Generator[_Event, None, None]:
         headers = dict(self._auth)
         if last_id is not None:
             headers["Last-Event-ID"] = str(last_id)
@@ -124,42 +131,53 @@ class EvalClient:
 
         def give_up() -> DriveResult:
             self.cancel(task_id)
-            return DriveResult(self.status(task_id), dict(approvals), questions)
+            status = self.status(task_id)
+            end = time.monotonic() + self.cancel_wait_seconds
+            while status not in TERMINAL_STATUSES and time.monotonic() < end:
+                time.sleep(self.poll_seconds)
+                status = self.status(task_id)
+            return DriveResult(status, dict(approvals), questions)
+
+        def respond(kind: str, item_id: str, body: dict[str, str]) -> bool:
+            """POST once per id; False (and forgotten, so it is retried) unless 2xx or 409."""
+            if item_id in seen:
+                return True
+            seen.add(item_id)
+            try:
+                resp = self.http.post(
+                    f"/v1/tasks/{task_id}/{kind}/{item_id}", json=body, headers=self._auth
+                )
+            except httpx.TransportError:
+                resp = None
+            if resp is not None and (resp.is_success or resp.status_code == 409):
+                return resp.is_success  # 409: no longer pending (decided, expired or finished)
+            seen.discard(item_id)
+            raise _Retry
 
         while True:
             if clock() >= deadline or (stop is not None and stop()):
                 return give_up()
+            events = self._events(task_id, last_id)
             try:
-                for event in self._events(task_id, last_id):
+                for event in events:
                     if clock() >= deadline or (stop is not None and stop()):
                         return give_up()
                     if not event.type:
                         continue
                     data: dict[str, Any] = json.loads("\n".join(event.data) or "{}")
                     if event.type == "approval_requested":
-                        approval_id = str(data["approval_id"])
-                        if approval_id not in seen:
-                            seen.add(approval_id)
+                        approve = {"decision": "approve"}
+                        if respond("approvals", str(data["approval_id"]), approve):
                             approvals[str(data.get("kind"))] += 1
-                            self.http.post(
-                                f"/v1/tasks/{task_id}/approvals/{approval_id}",
-                                json={"decision": "approve"},
-                                headers=self._auth,
-                            )
                     elif event.type == "question_asked":
-                        question_id = str(data["question_id"])
-                        if question_id not in seen:
-                            seen.add(question_id)
-                            questions += 1
-                            self.http.post(
-                                f"/v1/tasks/{task_id}/answers/{question_id}",
-                                json={"answer": EVAL_ANSWER},
-                                headers=self._auth,
-                            )
+                        answer = {"answer": EVAL_ANSWER}
+                        questions += respond("answers", str(data["question_id"]), answer)
                     if event.id is not None:
                         last_id = event.id
                     if event.type == "status" and data.get("to") in TERMINAL_STATUSES:
                         return DriveResult(str(data["to"]), dict(approvals), questions)
-            except httpx.TransportError:
-                pass  # dropped stream: reconnect with Last-Event-ID
-            time.sleep(0.2)
+            except (httpx.TransportError, _Retry):
+                pass  # dropped stream or failed POST: reconnect from the last handled event
+            finally:
+                events.close()  # closes the HTTP stream
+            time.sleep(self.poll_seconds)

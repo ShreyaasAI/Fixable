@@ -11,6 +11,7 @@ import pytest
 from minisweagent.environments.docker import DockerEnvironment
 from pydantic import ValidationError
 
+from swf import egress
 from swf.egress import EgressConfig, render_squid_conf
 from swf.sandbox import (
     LABEL_MANAGED,
@@ -441,7 +442,7 @@ def test_egress_config_pkgcache_defaults(monkeypatch: pytest.MonkeyPatch) -> Non
     assert cfg.egress_network == "swf-egress"
     assert cfg.pkgcache_image.startswith("python:3.12-slim@sha256:")
     assert len(cfg.pkgcache_image.rsplit(":", 1)[1]) == 64
-    assert cfg.pkgcache_dir == Path("pkgcache").resolve()
+    assert cfg.pkgcache_dir == (Path(egress.__file__).resolve().parents[2] / "pkgcache").resolve()
 
 
 def test_egress_config_pkgcache_dir_from_env(
