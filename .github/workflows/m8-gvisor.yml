@@ -17,6 +17,7 @@ concurrency:
 jobs:
   gvisor:
     # x86_64 hosted runner: arm64 runners are not free for private repos (A5).
+    if: github.repository == 'ShreyaasAI/swf-ci'  # never on Fixable (no push before M9)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -44,7 +45,7 @@ jobs:
           sudo runsc install
           sudo systemctl restart docker
           runsc --version | sed -n '1p'
-          docker info --format '{{json .Runtimes}}' | tee /dev/stderr | grep -q '"runsc"'
+          rt="$(docker info --format '{{json .Runtimes}}')"; echo "$rt"; grep -q '"runsc"' <<<"$rt"
           docker run --rm --runtime=runsc alpine:3 dmesg | sed -n '1,3p'
 
       # Sandboxes run as --user 1000:1000 and write the bind-mounted workspace (pytest tmp_path).
@@ -60,6 +61,9 @@ jobs:
           sudo install -d -o 1000 -g 1000 "$home"
           sudo usermod -aG docker "$u"
           sudo chown -R 1000:1000 "$GITHUB_WORKSPACE"
+          # Ubuntu 24.04 homes may be 0750: let uid 1000 traverse to the checkout.
+          p="$GITHUB_WORKSPACE"; while [ "$p" != / ]; do sudo chmod o+x "$p"; p="$(dirname "$p")"; done
+          sudo -u "$u" test -w "$GITHUB_WORKSPACE/pyproject.toml"
           echo "TEST_USER=$u" >> "$GITHUB_ENV"
           echo "LOG=$RUNNER_TEMP/m8-ci-pytest.log" >> "$GITHUB_ENV"
           echo "JUNIT=/tmp/m8-ci-junit.xml" >> "$GITHUB_ENV"  # /tmp: writable by the test user
@@ -82,7 +86,7 @@ jobs:
         continue-on-error: true
         run: |
           sudo -u "$TEST_USER" -H env PYTHONDONTWRITEBYTECODE=1 SWF_SANDBOX_RUNTIME=runsc \
-            "$UV_BIN" run pytest -o addopts="" -q -rs tests/test_m8_host_isolation.py
+            "$UV_BIN" run --locked pytest -o addopts="" -q -rs tests/test_m8_host_isolation.py
 
       - name: Host firewall rule (as ops/vm-bootstrap.sh, m8 §0.14)
         run: |
@@ -97,14 +101,14 @@ jobs:
           set -uo pipefail
           { uname -m; docker info --format '{{json .Runtimes}}'; runsc --version | sed -n '1p'; git -c safe.directory="$GITHUB_WORKSPACE" log --oneline -1; } | tee "$LOG"
           sudo -u "$TEST_USER" -H env PYTHONDONTWRITEBYTECODE=1 SWF_SANDBOX_RUNTIME=runsc \
-            "$UV_BIN" run pytest -o addopts="" -q -m "not live" -rs --junitxml="$JUNIT" 2>&1 | tee -a "$LOG"
+            "$UV_BIN" run --locked pytest -o addopts="" -q -m "not live" -rs --junitxml="$JUNIT" 2>&1 | tee -a "$LOG"
           exit "${PIPESTATUS[0]}"
 
       - name: gVisor and Docker tests ran (not skipped)
         if: always()
         run: |
           set -euo pipefail
-          "$UV_BIN" run --no-project python ops/ci_check_junit.py "$JUNIT"
+          python3 ops/ci_check_junit.py "$JUNIT"
 
       - name: Upload pytest log
         if: always()
