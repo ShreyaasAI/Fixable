@@ -4,7 +4,7 @@
 
 - **Purpose:** The interface contract and ordered task list for M9. If something here is wrong, report it. Do not silently diverge.
 - **Last updated:** 2026-11-22
-- **Status:** Draft v1 (plan), awaiting user approval of §0 Q1–Q4. Branch `feature/m9` (worktree `.claude/worktrees/m9-plan`), on top of `4f982a4` (M8 merged).
+- **Status:** Draft v2: user answers Q1–Q4 and review fixes applied (2026-11-22); awaiting user approval to build. Branch `feature/m9` (worktree `.claude/worktrees/m9-plan`), on top of `4f982a4` (M8 merged).
 - **Sources:** plan §5, §7, §13, §14, §16, §18 M9; spec §4 items 12–13, §8 (package cache row), §10 (criteria), §12 Q1 and Q3; research plan §6 item 9, §7.2, §8, RQ3, RQ9; m2 §0.2, §4, A6; m6 §0; m7 §13; m8 §0.15, §5, §6, §13 A5.
 - **Roles [D, user]:** Opus = planner, coder, reviewer. Sonnet = bash/ops, docs, test writer. Haiku = tester (runs suites, reports counts and failures, edits nothing). $0 infrastructure only.
 
@@ -24,10 +24,10 @@
 ### User decisions (2026-11-22)
 
 1. [D, user] **Eval host = the local PC.** Windows, Docker Desktop, x86_64, runc. Docker Desktop has no `runsc`, so the eval runs without gVisor. gVisor is already proven on CI (m8 §13 A5: full non-live suite under runsc). The eval measures concurrency and model quality; the runtime changes only overhead. Carried risk: runsc overhead (Sentry, systrap) may change the wall-time ratio on a production Linux host, and arm64 stays untested.
-2. [D, user] **Live models via Portkey, real PRs.** Model `@glm-4-7-flash/glm-4.7-flash` (as in M7) for every phase: the eval sets `SWF_MODEL_INVESTIGATE` and `SWF_MODEL_EXECUTE` to it (env only; see conflict C2 and Q3). PRs go to the throwaway `ShreyaasAI/swf-pr-sandbox` only. **No push to `ShreyaasAI/Fixable` until M9 is done; the rule holds during M9.**
+2. [D, user] **Live models via Portkey, real PRs.** Model `@glm-4-7-flash/glm-4.7-flash` (as in M7) for every phase: the eval sets `SWF_MODEL_INVESTIGATE` and `SWF_MODEL_EXECUTE` to it (env only; see conflict C2 and §0.25). PRs go to the throwaway `ShreyaasAI/swf-pr-sandbox` only. **No push to `ShreyaasAI/Fixable` until M9 is done; the rule holds during M9.**
 3. [D, user] **PR cap and cleanup.** Single pass 10 tasks + concurrent pass 10 tasks = at most 20 PRs. Hard cap 22 (two spare for an infra re-run; §0.12). After the URLs are recorded in the raw JSON and the results table, the eval's PRs are closed (not merged) and their `agent/<task-id>` branches deleted. Closed PRs stay readable as evidence.
 4. [D, user] **$0 infrastructure.** Nothing new is provisioned. The eval DB is a local `postgres:17-alpine` container, not the Supabase Free project.
-5. [D, user] **Public link is not M9 work.** Recorded as Q1.
+5. [D, user] **Public link is not M9 work** (§0.23).
 
 ### Planner decisions
 
@@ -35,34 +35,44 @@
    - `swf.pkgcache` is stdlib-only. It is copied into a pinned `python:3.12-slim` container (multi-arch) as `/app/pkgcache.py` and run with `python -I`.
    - Routes: `GET|HEAD /simple/<name>/` and `GET|HEAD /files/<path>`. Every other method → 405; every other path → 404.
    - Index pages are fetched from `https://pypi.org/simple/<name>/` and rebuilt, not passed through. Only links to `files.pythonhosted.org/packages/` with a `#sha256=` fragment survive. Each becomes `/files/<path>#sha256=<hex>`; `data-requires-python` and `data-yanked` are kept; PEP 658 metadata attributes are dropped.
-   - A file is fetched only if its path appeared in a cached index page, so the cache is not a general fetcher. Its sha256 must match the index; on a mismatch the cache answers 502 and stores nothing. Writes are atomic (temp file + `os.replace`). Files over 200 MB → 502.
-   - TTL 24 h for index pages and files (file age = time since it was stored). A sweep runs at start and hourly.
+   - A file is fetched only if its path appeared in a cached index page, so the cache is not a general fetcher. Its sha256 must match the index; on a mismatch the cache answers 502 and stores nothing. Writes are atomic (temp file + `os.replace`). Files over 200 MB → 502. Total size is capped at `MAX_CACHE_BYTES` = 5 GiB: after each stored file, the oldest stored files are evicted until the total is ≤ the cap.
+   - TTL 24 h for index pages and files (file age = time since it was stored). A stale entry is never served; it is refetched and overwritten. One sweep at start removes stale entries. There is no periodic sweep, because the size cap bounds disk use.
    - Upstream goes through Squid (`HTTPS_PROXY` = the proxy's IP on a new internal network `swf-egress` that joins only the proxy and the cache). The allowlist stays the single egress choke point.
    - Container: on internal networks only (`swf-egress` plus each task network). It is never on the default bridge, so it has no direct route out. Flags: `--cap-drop ALL`, `--security-opt no-new-privileges`, `--read-only`, `--tmpfs /tmp`, `--memory 256m`, `--pids-limit 128`, `--dns 127.0.0.1`, `--user` = `sandbox_user()`. Labels: `swf.egress=1` and a conf-hash label, never `swf.managed=1`. Cache dir = host bind `SWF_PKGCACHE_DIR` (default `./pkgcache`), mounted read-write in the cache container only.
    - **Read-only to tasks:** sandboxes never mount the cache dir. Their only access is HTTP GET/HEAD to the cache. Package hashes come from PyPI over TLS, so a task cannot plant a package for another task.
    - Sandbox env adds `PIP_INDEX_URL=http://<cache-ip>:3141/simple/`, `PIP_TRUSTED_HOST=<cache-ip>`, `NO_PROXY` and `no_proxy` = `<cache-ip>`. The proxy env stays, so other allowlisted HTTPS still works. The cache runs on runc even under runsc (our image and code, no user code; same reasoning as m8 §0.13 for Squid).
    - `EgressConfig.pkgcache: bool = True`. Off → no cache container and no `PIP_*` index variables (M8 behaviour).
-7. [D, planner] **Linux workspace ownership without chown.** The backend clones as the host user. The sandbox now runs as that same uid:gid on POSIX hosts (`sandbox_user()`, §1.1), so the bind-mounted workspace is writable with no privilege. Files the agent creates are owned by the backend, and git inside the container sees no "dubious ownership". Rejected: `chown -R 1000:1000` after clone. It needs root or CAP_CHOWN on the host, and the backend would then lose write access to its own workspaces (snapshots, delete). Root is refused: uid 0 or gid 0 → `SandboxUserError`, unless `SWF_SANDBOX_USER` gives a non-root `uid:gid`. Windows/Docker Desktop keeps `1000:1000`. This replaces m8 §0.15's uid-1000 account: CI now runs the suite as the runner user (uid 1001), which is the proof.
-8. [D, planner] **Seed repos on GitHub.** Each seed's `repo/` tree (only; never `reference/` or `seed.yaml`) is pushed as branch `seed/<seed-name>` of `ShreyaasAI/swf-pr-sandbox`. The commit is deterministic (fixed author, committer and dates), so re-publishing is a no-op. The push is never forced; a differing remote branch → `SeedBranchConflict`. A task is `{repo: "ShreyaasAI/swf-pr-sandbox", base_branch: "seed/<name>", description: seed.description, failing_test: seed.target_test}`, so each PR targets its seed branch. The harness, not the backend, does this push. The backend still pushes only `agent/<task-id>`. **Needs Q2.**
-9. [D, planner] **Quotas for the eval without changing product behaviour.** Two eval users, `eval-a` and `eval-b`, keep the default 1 concurrent task each. Host concurrency 2 comes from the worker (`max_concurrent=2`, admission limits as in m2 §0.5). The eval API process sets only `SWF_QUOTA_TASKS_PER_DAY=12` (each user runs 10 tasks plus spare). Cost quotas stay at the defaults ($1/task, $3/day). Both JWTs carry the same GitHub `provider_id` (the `gh` account), so `POST /v1/me/github-token` passes for both. No code path changes. The final quota numbers stay **[Q]** (Q4).
+7. [D, planner] **Linux workspace ownership without chown.** The backend clones as the host user. The sandbox now runs as that same uid:gid on POSIX hosts (`sandbox_user()`, §1.1), so the bind-mounted workspace is writable with no privilege. Files the agent creates are owned by the backend, and git inside the container sees no "dubious ownership". Rejected: `chown -R 1000:1000` after clone. It needs root or CAP_CHOWN on the host, and the backend would then lose write access to its own workspaces (snapshots, delete). Root is refused: uid 0 or gid 0 → `SandboxUserError`. A backend running as root must set `SWF_SANDBOX_USER` to a non-root `uid:gid` and own the workspaces as that user; otherwise the worker does not start. Windows/Docker Desktop keeps `1000:1000`. This replaces m8 §0.15's uid-1000 account: CI now runs the suite as the runner user (uid 1001), which is the proof. On the CI runner the primary gid is the `docker` group. That is harmless: sandboxes get no Docker socket, and the gid only tags files in the workspace.
+8. [D, planner] **Seed repos on GitHub.** Each seed's `repo/` tree (only; never `reference/` or `seed.yaml`) is pushed as branch `seed/<seed-name>` of `ShreyaasAI/swf-pr-sandbox`. The commit is deterministic (fixed author, committer and dates), so re-publishing is a no-op. The push is never forced; a differing remote branch → `SeedBranchConflict`. `GitOps.push` refuses any branch that is not `agent/<uuid>` (`src/swf/gitops.py:261-263`) and stays unchanged.
+
+   Seed branches use a separate hardened push inside `swf_eval.seeds`, with the same env as `GitOps.env(token)`: hooks off, no system or global config, askpass token, no prompts. It accepts only `^seed/[0-9]{2}-[a-z0-9-]{1,60}$` and an exact `refs/heads/<b>:refs/heads/<b>` refspec, never `+`. A task is `{repo: "ShreyaasAI/swf-pr-sandbox", base_branch: "seed/<name>", description: seed.description, failing_test: seed.target_test}`, so each PR targets its seed branch. The harness, not the backend, does this push. The backend still pushes only `agent/<task-id>`. Approved by the user (§0.24).
+9. [D, planner] **Quotas for the eval without changing product behaviour.** Two eval users, `eval-a` and `eval-b`, keep the default 1 concurrent task each. Host concurrency 2 comes from the worker (`max_concurrent=2`, admission limits as in m2 §0.5). The eval API process sets only `SWF_QUOTA_TASKS_PER_DAY=12` (each user runs 10 tasks plus spare). Cost quotas stay at the defaults ($1/task, $3/day). Both JWTs carry the same GitHub `provider_id` (the `gh` account), so `POST /v1/me/github-token` passes for both. No code path changes. Final quota numbers: §0.26.
 10. [D, planner] **What "resolved" means.** A task is resolved iff all of these hold:
     - its status is `completed` and it has a `pr_url`;
-    - a fresh clone of the PR head (branch `agent/<task-id>`) has had its protected files restored from the pristine seed (§1.4 `restore_tests`);
+    - a check tree is built from the pristine seed `repo/` (§1.5 `build_check_tree`):
+      - Each pristine **non-protected** file is replaced by the agent's version, taken from a fresh clone of the PR head (branch `agent/<task-id>`).
+      - Protected files (tests, `conftest.py`, `pytest.ini`, `AGENTS.md`, other config) always stay pristine.
+      - Files the agent added are ignored and reported as `files_added`. So a planted `pytest.py`, `pytest.toml`, `conftest.py` or `sitecustomize.py` cannot change the run.
+      - A pristine non-protected file the agent deleted stays deleted (`files_deleted`).
     - in a fresh sandbox with the seed's image and `setup`, both `python -m pytest -q <target_test>` and `python -m pytest -q` exit 0.
 
     The check runs after both passes, sequentially, so it does not load the host during a timed pass.
 
     Controls run for all 10 seeds first and validate the checker: the pristine tree must not resolve (target exit ≠ 0), and pristine + `reference/` must resolve. A failed control stops the eval.
 
-    `tests_touched` (files the PR added, changed or deleted among the protected set) is reported. Because those files are restored, a fix that only edits tests does not resolve.
+    Two lists are reported. `tests_touched` holds the protected pristine files the PR changed or deleted, plus protected-shaped files it added. `files_added` holds every added file. Protected files stay pristine and added files are ignored, so a fix that only edits or adds tests does not resolve.
+
+    Known limit: a correct fix that needs a new module does not resolve. No seed needs one.
 11. [D, planner] **How wall time is measured and compared.**
     - Per-task wall = from the task's `status` event `to: "preparing"` (worker claim) to its `status` event into a terminal status. Server timestamps from `events.created_at`. Queue time is excluded: queueing is expected at 2 concurrent and not a slowdown.
     - DoD metric: `wall_ratio = median(concurrent per-task walls) / median(single per-task walls)`, required ≤ 1.25. The spec text "wall time ≤ 1.25× single-task" compares one task's latency with and without a neighbour. A batch total cannot be compared with a single task. The median is robust to one runaway trajectory.
     - Each median needs ≥ 8 tasks with both timestamps; otherwise `wall_ratio = None` and `wall_ok = False` ("insufficient data").
     - Also reported, not gating: per-seed paired ratios; seconds per agent step (less sensitive to trajectory length); batch wall per pass (first claim → last terminal). With 2 workers the concurrent batch should take roughly 0.5–0.65 × the single batch.
+    - Also reported, next to the gating median: the median over `completed` tasks only, per pass. It is informational, so a fast-failing task cannot hide a slowdown.
+    - A re-run (§0.13) replaces the infra-failed record for that pass and seed in every metric. The replaced record stays in `run.json` under `replaced`, with its cause.
     - Auto-approval latency (driver reacts within ~1 s) is inside both passes equally.
-12. [D, planner] **Resolve-rate drop.** `rate = resolved / 10` per pass. A task that never ran (abort) counts as unresolved. `drop = rate_single − rate_concurrent`, required ≤ 0.10 (one seed of ten). With n = 10, one flip is within noise; the DoD allows exactly that.
-13. [D, planner] **Trials and variance.** One trial per pass (cap 20 PRs). Both passes run back to back on the same day with the same model, the same agent limits and a cache warmed before each pass (`warm-cache` runs every seed's `setup`, no LLM), so neither pass gets a cold-cache penalty. Provider load drift is not controlled; it is noted in the results. An infra failure gets one re-run of that seed in its pass, within the 22-PR cap; the cause is recorded. Infra failures are: `clone_failed`, a `pr_failed:*` stage, Docker errors, or a Portkey 5xx storm before the first model reply. A model failure (wrong fix, step or wall limit, `failed` by evidence) is a result, not re-run. If a DoD check fails, record it and stop; a second trial needs the user's OK (more PRs).
+12. [D, planner] **Resolve-rate drop.** `rate = resolved / 10` per pass. A task that never ran (abort) counts as unresolved. `drop = rate_single − rate_concurrent`, required ≤ 0.10. [D] The drop is in absolute percentage points (≤ 10 points = one seed of ten), not relative to the single rate. With n = 10, one flip is within noise; the DoD allows exactly that.
+13. [D, planner] **Trials and variance.** One trial per pass (cap 20 PRs). Both passes run back to back on the same day with the same model, the same agent limits and a cache warmed before each pass (`warm-cache` runs every seed's `setup`, no LLM), so neither pass gets a cold-cache penalty. Provider load drift is not controlled; it is noted in the results. An infra failure gets one re-run of that seed in its pass, within the 22-PR cap. The re-run replaces the failed record (§0.11), and the cause is recorded. Infra failures are: `clone_failed`, a `pr_failed:*` stage, Docker errors, or a Portkey 5xx storm before the first model reply. A model failure (wrong fix, step or wall limit, `failed` by evidence) is a result, not re-run. If a DoD check fails, record it and stop; a second trial needs the user's OK (more PRs).
 14. [D, planner] **Agent limits for both passes.** `step_limit=80`, `wall_time_limit_seconds=1800`, set through new worker env knobs `SWF_AGENT_STEP_LIMIT` and `SWF_AGENT_WALL_TIME_SECONDS` (§1.2). Unset keeps the product defaults (150, 3600). Guards stay on (`Guardrails.from_env`) because they are part of the pipeline. The guard time per task is reported separately: the M7 judge p95 is 50 s per text, and it will dominate wall time.
 15. [D, planner] **Cost and hard stops.** M4's live smoke (9 calls) and M7's live corpus (102 judged texts) both cost $0. glm-4.7-flash is a free model, so the expected LLM cost is $0. litellm reports 0 for unknown prices (`cost_tracking="ignore_errors"`), so the booked `tasks.cost_usd` cannot prove $0. The user checks Portkey's usage page before and after the eval (§4).
 
@@ -73,8 +83,10 @@
     - total wall ≥ 6 h (`--max-hours`);
     - 5 consecutive tasks fail on model or provider errors (`retry` events with step `model` exhausted).
 
+    The budget is checked after every task. In the concurrent pass, each driver thread also checks it before it creates its next task and every 30 s while it drives one. The counters are shared under a lock, so one thread cannot overrun while the other is mid-task.
+
     [A] One run is about 20 tasks × (≤ 80 agent calls + guard chunks) ≈ 2000–3500 Portkey requests, within the free plan's monthly allowance. The user confirms the allowance on the Portkey dashboard before the run.
-16. [D, planner] **Auto-approval in the eval.** The driver approves every `plan`, `command`, `guard_flag` and `readonly_violation` approval, and answers every question with "No human is available. Use your best judgement and continue." Each decision is counted by kind in the results. Forbidden commands never reach an approval (classifier), and the sandbox boundary is unchanged. This is an eval-only stand-in for the user; it is not in `swf`.
+16. [D, planner] **Auto-approval in the eval.** The driver approves every `plan`, `command`, `guard_flag` and `readonly_violation` approval, and answers every question with "No human is available. Use your best judgement and continue." Each decision is counted by approval kind in the results. Auto-approved `guard_flag`s are also counted by guard category (injection, toxicity, malicious, pii, secret, output_check, guard_error). Each one is listed on its own line (task, category, source), because each is a point where a real user would have had to decide. Forbidden commands never reach an approval (classifier), and the sandbox boundary is unchanged. This is an eval-only stand-in for the user; it is not in `swf`.
 17. [D, planner] **Isolation of the eval stack.** The runner builds the API and worker env from scratch. It passes only the variables they need, plus `PATH` and `SYSTEMROOT` on Windows:
     - a local DB URL;
     - a fake `SWF_SUPABASE_URL=http://eval.localhost`;
@@ -93,30 +105,29 @@
 
 ### Conflicts between sources (reported before code)
 
-- **C1 Host.** Plan §7, §18 M9 title "(Oracle VM)" and spec §4 item 12 name the Oracle Arm VM with gVisor. The user's 2026-11-22 decision: eval on the local PC (x86_64, runc); Oracle dropped (needs a card). T13 updates plan §18 M9 and spec §4 item 12 / §12 Q3 to match. Spec §10's gVisor requirement for the MVP still stands for the public deploy (Q1).
-- **C2 Models.** Plan §5 sets ernie-5.5-flash for investigate/plan and glm for execute/verify. The user asked for glm-4.7-flash (as in M7). The eval uses glm for all phases via env, and the product default is unchanged. See Q3.
+- **C1 Host.** Plan §7, §18 M9 title "(Oracle VM)" and spec §4 item 12 name the Oracle Arm VM with gVisor. The user's 2026-11-22 decision: eval on the local PC (x86_64, runc); Oracle dropped (needs a card). T13 updates plan §18 M9 and spec §4 item 12 / §12 Q3 to match. Spec §10's gVisor requirement for the MVP still stands for the public deploy (§0.23).
+- **C2 Models.** Plan §5 sets ernie-5.5-flash for investigate/plan and glm for execute/verify. The user asked for glm-4.7-flash (as in M7). The eval uses glm for all phases via env, and the product default is unchanged. See §0.25.
 - **C3 Cache location.** Research plan §8 draws the 1-day cache inside the egress proxy, and plan §7 says "egress proxy … with a 1-day package cache". Squid only tunnels HTTPS, so the cache becomes a separate container behind the proxy (§0.6). T13 updates research plan §8 and plan §7 wording.
 - **C4 uid 1000.** M2/M6/M8 deferred "chown for uid 1000". This contract runs the sandbox as the host user instead (§0.7), so there is no chown. M8's tests that assert `id -u == 1000` change to assert the `sandbox_user()` uid.
 - **C5 Quotas.** Spec §12 Q1 defaults allow 5 tasks/day and 1 concurrent per user; the eval needs 20 tasks and 2 at a time. Resolved without product change (§0.9).
 - **C6 Plan location.** The writing-plans skill saves to `docs/superpowers/plans/`; the lead's instruction puts this contract in `docs/software-factory/` (user instruction wins).
+- **C7 Paid tasks vs spec non-goals.** The user wants 2 free tasks/day, then $1 per extra task, as real paid tasks (§0.26). This conflicts with three sources:
+  - spec §5 non-goals list "Billing / paid plans for open users" (quotas only in the MVP);
+  - spec §5 lists "Free/Pro plans, billing" as a vision item;
+  - plan §17 lists billing as a non-goal.
 
-### Open questions (need the user)
+  Resolution: a new post-M10 payments milestone. The lead updates the spec and plan then.
 
-- **Q1 Public link (not M9 work).** GitHub Actions jobs cannot accept inbound traffic and end within 6 h, so Actions cannot host the app. Options:
-  - (a) Static UI on GitHub Pages, with the API and worker on this PC behind a free Cloudflare quick tunnel.
-  - (b) Defer the public deploy to M10, with the UI.
-  - (c) Research a free Docker host that needs no card.
+### User answers (2026-11-22)
 
-  **Recommended: (b), with (a) as the M10 deploy path, but only after a gVisor-capable runtime is in place on the PC** (for example Docker Engine + runsc inside WSL2 Ubuntu; [A] untested).
-
-  Security implications of (a):
-  - Strangers' repos and agent commands would run on your personal PC. Docker Desktop has no gVisor, and gVisor is required for the MVP (research plan §6 item 9).
-  - The API becomes reachable from the internet. It then needs real Supabase Auth (GitHub OAuth) instead of the local HS256 secret, per-IP limits for unauthenticated traffic (m8 §6, not built), and the kill switch watched.
-  - Quick-tunnel URLs change on restart and have no SLA, and the PC must stay on.
-  - The tunnel itself does not expose the home network beyond the API port.
-- **Q2 Seed branches on the throwaway repo.** May the harness push 10 non-agent branches `seed/<name>` (seed `repo/` contents only) to `ShreyaasAI/swf-pr-sandbox`, as PR bases (§0.8), and delete them after M9 is approved? **Recommended: yes.** It is the only way to run the full GitHub pipeline on the 10 seeds without a second repo.
-- **Q3 Model for investigate/plan.** Use glm-4.7-flash for every phase in the eval (env override, product default ernie unchanged), or also change the plan §5 default to glm after M9? **Recommended:** glm for all phases in the eval. Afterwards, make glm the product default if the eval meets the DoD, so the product runs what was measured. Ernie is often 429 upstream (plan §5).
-- **Q4 Quota numbers.** Still the spec defaults (5 tasks/day, $1/task, $3/day, 1 concurrent per user). The eval does not need new numbers (§0.9). **Recommended:** keep the defaults for the open beta and revisit with M9 cost data at M10.
+23. [D, user] **Q1 Public link: deferred to M10.** Pages + Cloudflare quick tunnel becomes the M10 path only once the PC has a gVisor runtime (for example Docker Engine + runsc in WSL2; [A] untested). The caveats stand:
+    - Without gVisor, strangers' code would run on the user's PC under runc.
+    - The API would need real Supabase Auth (GitHub OAuth), per-IP limits for unauthenticated traffic (m8 §6, not built) and a watched kill switch.
+    - Quick-tunnel URLs change on restart and have no SLA, and the PC must stay on.
+    - GitHub Actions cannot host the app: no inbound traffic, and jobs end within 6 h.
+24. [D, user] **Q2 Seed branches: yes.** The harness pushes the 10 `seed/<name>` branches to `ShreyaasAI/swf-pr-sandbox` (§0.8) and deletes them after the user approves M9.
+25. [D, user] **Q3 Models: glm-4.7-flash for all phases in the eval, via env.** The product default (plan §5: ernie for investigate/plan) switches to glm only if the M9 DoD passes. T12 records that change in plan §5.
+26. [D, user] **Q4 Quotas: "2 free tasks per day, then $1 per extra task", as real paid tasks. Deferred to a new post-M10 milestone (payments).** It needs a payment provider, and the spec lists billing as a non-goal (conflict C7). M9 changes nothing for it: the eval quotas stay as in §0.9, and `AbuseLimits` stays at the spec defaults. The lead records the spec change later; this contract does not edit the spec.
 
 ## 1. Interfaces
 
@@ -158,6 +169,7 @@ UPSTREAM_INDEX = "https://pypi.org/simple/"
 UPSTREAM_FILES = "https://files.pythonhosted.org/packages/"
 TTL_SECONDS = 86_400
 MAX_FILE_BYTES = 200 * 1024 * 1024
+MAX_CACHE_BYTES = 5 * 1024**3
 
 class HashMismatch(Exception): ...
 
@@ -172,12 +184,15 @@ def rebuild_index(html: str) -> tuple[str, dict[str, str]]: ...
 # + "</body></html>\n". Everything else (other hosts, relative links, metadata attributes) is dropped.
 
 class Store:
-    def __init__(self, root: Path, *, clock: Callable[[], float] = time.time, ttl: float = TTL_SECONDS) -> None: ...
+    def __init__(self, root: Path, *, clock: Callable[[], float] = time.time, ttl: float = TTL_SECONDS,
+                 max_bytes: int = MAX_CACHE_BYTES) -> None: ...
     def get_index(self, name: str) -> str | None: ...                 # fresh only
     def put_index(self, name: str, page: str, hashes: Mapping[str, str]) -> None: ...
     def expected_sha(self, path: str) -> str | None: ...              # from a fresh index entry, else None
     def get_file(self, path: str) -> Path | None: ...                 # fresh only
-    def put_file(self, path: str, chunks: Iterable[bytes], sha256: str) -> Path: ...  # HashMismatch / ValueError(>MAX)
+    def put_file(self, path: str, chunks: Iterable[bytes], sha256: str) -> Path: ...  # HashMismatch / ValueError(>MAX);
+                                                                      # then evicts oldest stored files until total <= max_bytes
+    def total_bytes(self) -> int: ...
     def sweep(self) -> int: ...                                       # removes stale entries; returns count
 
 class Fetcher(Protocol):
@@ -187,7 +202,7 @@ class UrllibFetcher:  # urllib.request with the process env proxy (HTTPS_PROXY),
     ...
 
 def make_handler(store: Store, fetcher: Fetcher) -> type[http.server.BaseHTTPRequestHandler]: ...
-def main(argv: Sequence[str] | None = None) -> None: ...            # --root DIR --port 3141 --bind 0.0.0.0
+def main(argv: Sequence[str] | None = None) -> None: ...            # --root DIR --port 3141 --bind 0.0.0.0; one sweep() at start
 ```
 
 Handler rules:
@@ -227,27 +242,42 @@ class Seed:
     reference_dir: Path   # seeded_repos/<name>/reference (harness-only)
 def load_seeds(root: Path = SEEDED_REPOS) -> list[Seed]: ...                # sorted by name; 10 expected
 FORBIDDEN_REPO = "shreyaasai/fixable"
+ALLOWED_EVAL_REPOS = frozenset({"ShreyaasAI/swf-pr-sandbox"})
+def check_eval_repo(repo: str) -> str: ...   # normalize_repo(repo); not in ALLOWED_EVAL_REPOS (case-insensitive) -> ValueError.
+                                             # Called first by run, seed-branches, check and cleanup, before any network call.
+SEED_BRANCH_RE = re.compile(r"^seed/[0-9]{2}-[a-z0-9-]{1,60}$")
 class SeedBranchConflict(Exception): ...
 def seed_branch(seed: Seed) -> str: ...                                     # "seed/<name>"
 def publish_seed_branches(git: GitOps, repo: str, token: str, seeds: Sequence[Seed], work: Path) -> dict[str, str]: ...
 # per seed: git init in work/<name>, copy repo_dir only, commit (hooks off, GIT_AUTHOR/COMMITTER_* fixed,
-# dates "2026-11-22T00:00:00Z"), then non-force push refs/heads/seed/<name>. Same sha remote -> skip.
-# Different remote sha -> SeedBranchConflict. repo == FORBIDDEN_REPO (case-insensitive) -> ValueError
-# before any git call. Returns {name: commit sha}.
+# dates "2026-11-22T00:00:00Z"), then push_seed_branch. Same sha remote -> skip.
+# Different remote sha -> SeedBranchConflict. check_eval_repo(repo) first, so Fixable or any other repo
+# -> ValueError before any git call. Returns {name: commit sha}.
+def push_seed_branch(git: GitOps, path: Path, branch: str, *, token: str) -> None: ...
+# Own hardened push (GitOps.push is agent/<uuid>-only and unchanged): env = git.env(token), hooks off,
+# branch must match SEED_BRANCH_RE, refspec exactly refs/heads/<b>:refs/heads/<b> (no "+", no --force),
+# "!" in porcelain output -> SeedBranchConflict (token redacted).
 
 # swf_eval/resolve.py
 PROTECTED_NAMES = frozenset({"AGENTS.md", "pytest.ini", "conftest.py", "setup.cfg", "tox.ini", "pyproject.toml"})
 def is_protected(rel: str) -> bool: ...          # under tests/ , or basename in PROTECTED_NAMES
-def restore_tests(seed: Seed, tree: Path) -> tuple[str, ...]: ...
-# Copies every protected pristine file over the tree; deletes protected files present in the tree but not
-# pristine; returns sorted rel paths that differed, were added, or were missing.
+@dataclass(frozen=True)
+class CheckTree:
+    root: Path; tests_touched: tuple[str, ...]; files_added: tuple[str, ...]; files_deleted: tuple[str, ...]
+def build_check_tree(seed: Seed, pr_tree: Path, dest: Path) -> CheckTree: ...
+# dest must not exist. Copies seed.repo_dir to dest. For each pristine file that is not protected: present in
+# pr_tree -> copy the agent's version over; absent -> delete it in dest (files_deleted). Protected files stay
+# pristine; those that differ in or are missing from pr_tree -> tests_touched. Files in pr_tree that are not in
+# the pristine repo are never copied -> files_added (protected-shaped ones also go to tests_touched). `.git/`
+# is ignored. Symlinks in pr_tree are never followed or copied (reported in files_added). All lists sorted.
 @dataclass(frozen=True)
 class Resolution:
-    setup_ok: bool; target_exit: int | None; suite_exit: int | None; tests_touched: tuple[str, ...]
+    setup_ok: bool; target_exit: int | None; suite_exit: int | None
+    tests_touched: tuple[str, ...]; files_added: tuple[str, ...]
     @property
     def resolved(self) -> bool: ...  # setup_ok and target_exit == 0 and suite_exit == 0
 Runner = Callable[[Seed, Path, Sequence[str]], list[int]]   # (seed, tree, commands) -> exit codes, stops at first setup failure
-def check_resolution(seed: Seed, tree: Path, run: Runner) -> Resolution: ...
+def check_resolution(seed: Seed, pr_tree: Path, work: Path, run: Runner) -> Resolution: ...  # build_check_tree, then run
 def sandbox_runner(egress: EgressConfig) -> Runner: ...   # open_task_sandbox per call; image/resources from AGENTS.md
 def run_controls(seed: Seed, run: Runner, work: Path) -> tuple[Resolution, Resolution]: ...  # (pristine, reference)
 
@@ -317,14 +347,18 @@ def render_results(run: Mapping[str, Any], records: Sequence[TaskRecord], v: Ver
 
 # swf_eval/cleanup.py
 def cleanup_plan(records: Sequence[TaskRecord], repo: str) -> list[tuple[int, str]]: ...  # (pr number, branch)
-# Only PRs of this run on `repo`, only branches matching ^agent/[0-9a-f-]{36}$; repo Fixable -> ValueError.
-def apply_cleanup(api: GitHubClient, token: str, repo: str, plan: Sequence[tuple[int, str]]) -> None: ...
-# PATCH /repos/{repo}/pulls/{n} {"state":"closed"}; DELETE /repos/{repo}/git/refs/heads/{branch}.
+# check_eval_repo(repo) first. Number parsed from the recorded pr_url, which must be exactly
+# https://github.com/<repo>/pull/<n>; branch = "agent/<task_id>" of that record, matching ^agent/[0-9a-f-]{36}$.
+def apply_cleanup(api: GitHubClient, token: str, repo: str, plan: Sequence[tuple[int, str]]) -> list[str]: ...
+# Per item: GET /repos/{repo}/pulls/{n}; skip with a logged reason unless html_url == recorded pr_url,
+# head.repo.full_name == base.repo.full_name == repo, and head.ref == branch. Then
+# PATCH {"state":"closed"} and DELETE /repos/{repo}/git/refs/heads/{branch}. Returns log lines.
+# Seed branches: cleanup --seeds deletes seed/<name> refs after the user approves M9 (§0.24).
 
 # swf_eval/__main__.py  (argparse subcommands)
 # seed-branches --repo R | warm-cache | controls | run --pass single|concurrent|both --repo R --out DIR
 #   [--seeds 01,02] [--budget-usd 1] [--max-calls 4000] [--max-prs 22] [--max-hours 6]
-# | check --out DIR | report --out DIR [--write docs/software-factory/m9-results.md] | cleanup --out DIR [--apply]
+# | check --out DIR | report --out DIR [--write docs/software-factory/m9-results.md] | cleanup --out DIR [--apply] [--seeds]
 ```
 
 `GitHubClient` gains two methods for cleanup: `close_pull(token, repo, number)` and `delete_branch(token, repo, branch)`. `delete_branch` refuses any branch not matching `^agent/[0-9a-f-]{36}$` or `^seed/[0-9a-z-]{1,64}$`. There is still no merge call (M6 no-merge test unchanged).
@@ -347,7 +381,13 @@ Per task (20 rows, sorted by pass then seed):
 
 | Pass | Seed | User | Status | Error | Wall s | Guard s | Agent calls | Retries | Approvals (plan/cmd/flag/ro) | Questions | Cost $ | PR | Tests touched | Target | Suite | Resolved | Peak MB |
 
-Then: controls table (10 seeds: pristine target exit, reference resolved), notes (infra re-runs and causes, provider errors), and the PR cleanup log (closed PR numbers, deleted branches).
+The per-task table also has a `Files added` column. The summary adds the row "Median wall, completed only (s)" (info).
+
+Then, in order:
+- auto-approved guard flags: count by category, then one line per flag (pass, seed, category, source);
+- controls table (10 seeds: pristine target exit, reference resolved);
+- replaced records (infra re-runs);
+- notes (infra re-runs and causes, provider errors), and the PR cleanup log (closed PR numbers, deleted branches).
 
 ## 2. Test conventions (all test tasks)
 
@@ -445,6 +485,7 @@ def test_agent_overrides_rejects(name: str, value: str) -> None:
   2. `valid_file_path`: a real-shaped path passes; `../etc/passwd`, an empty name, a 59-hex dir, `aa/bb/<60hex>/..` and a name with `/` fail.
   3. `rebuild_index(fixture)`: exactly the 3 hashed `files.pythonhosted.org` links survive (2 wheels + yanked). Hrefs start with `/files/`. `data-requires-python` is kept and escaped, `data-yanked` is kept, and no `data-dist-info-metadata` or `pypi.org`/other host text remains. The returned dict maps 3 paths to their hashes.
   4. `Store` with a manual clock: `put_index`, then `get_index` returns the page and `expected_sha` the hash. At `clock += 86_401`, both are None. `sweep()` removes the entries and returns > 0.
+  4b. Size cap: `Store(root, max_bytes=25, clock=c)`. Store three 10-byte files at t=1, 2, 3 (each with its index hash) → the t=1 file is gone, the other two remain, and `total_bytes() <= 25`. A single file larger than `max_bytes` (but under `MAX_FILE_BYTES`) is stored, and every older file is evicted.
   5. `put_file` with the right sha → file exists, `get_file` returns it. Wrong sha → `HashMismatch`, no file and no temp file left. More than `MAX_FILE_BYTES` (monkeypatched to 10) → `ValueError`.
   6. Handler via `ThreadingHTTPServer` on `127.0.0.1:0` and a `FakeFetcher` (dict url → bytes, counts calls):
      - `/simple/pytest/` → 200, twice; upstream index fetched once.
@@ -464,7 +505,7 @@ def test_agent_overrides_rejects(name: str, value: str) -> None:
 
 **Files:** create `src/swf/pkgcache.py`.
 
-- [ ] Implement §1.3 with `http.server.ThreadingHTTPServer`, `html.parser.HTMLParser`, `hashlib`, `urllib.request`. `main` prints `pkgcache listening on <bind>:<port>` and flushes, runs `sweep()` at start and every 3600 s in a daemon thread. Storage layout (coder's choice) stays under `root`. Keys are hashed with sha256 of the name or path, so user input never becomes a filesystem path.
+- [ ] Implement §1.3 with `http.server.ThreadingHTTPServer`, `html.parser.HTMLParser`, `hashlib`, `urllib.request`. `main` prints `pkgcache listening on <bind>:<port>` and flushes, runs `sweep()` once at start, with no periodic thread. `put_file` enforces `max_bytes` by evicting the oldest stored files. Storage layout (coder's choice) stays under `root`. Keys are hashed with sha256 of the name or path, so user input never becomes a filesystem path.
 - [ ] Green: `tests/test_m9_pkgcache_unit.py`.
 - [ ] Commit `M9 T4: stdlib PyPI pull-through cache`.
 
@@ -562,8 +603,21 @@ def test_parse_mem(raw: str, mb: int) -> None:
 
   Plus:
   - `render_results` output contains the summary header row, 20 task rows and the strings `≤ 1.25` and `≤ 10`. It contains no `ghp_`/`gho_`/`github_pat_` or `sk-` prefixes even when an input record's error text holds a fake token (the report redacts token-shaped strings).
-  - `is_protected` and `restore_tests` on a tmp copy of seed 01: an edited test, an added `tests/test_extra.py`, an added `conftest.py` and a deleted `pytest.ini` → all four are listed and restored or removed, and non-test files are untouched.
-  - `cleanup_plan`: only this run's PRs; a branch not shaped like `agent/<uuid>` is excluded; repo `ShreyaasAI/Fixable` → `ValueError`.
+  - `build_check_tree` on a PR tree made from a copy of seed 01:
+    - the agent's `pager.py` edit is in the check tree;
+    - an edited `tests/test_pager.py` and a deleted `pytest.ini` → pristine in the check tree, both in `tests_touched`;
+    - added `tests/test_extra.py`, `conftest.py`, `pytest.py`, `pytest.toml` and `sitecustomize.py` → absent from the check tree, all in `files_added`; the test file and `conftest.py` also in `tests_touched`;
+    - a symlink in the PR tree → not copied, listed in `files_added`;
+    - an existing `dest` → error.
+  - `check_eval_repo`:
+    - `ShreyaasAI/swf-pr-sandbox`, `shreyaasai/SWF-PR-SANDBOX` and `https://github.com/ShreyaasAI/swf-pr-sandbox` pass;
+    - `ShreyaasAI/Fixable`, `ShreyaasAI/swf-ci` and `other/swf-pr-sandbox` → `ValueError`;
+    - each of the `run`, `seed-branches`, `check` and `cleanup` CLI entry points with a disallowed `--repo` exits non-zero before any HTTP or git call (spies).
+  - `cleanup_plan`: only this run's PRs. A pr_url for another repo, or not of the form `https://github.com/<repo>/pull/<n>`, is excluded.
+  - `apply_cleanup` with a fake API: it skips a PR whose `head.ref` differs, whose head repo is a fork, or whose `html_url` differs. It closes and deletes only the matching ones.
+  - Seed push: `push_seed_branch` refuses `agent/x`, `seed/../x`, `+seed/01-a` and `main`. `GitOps.push(path, "seed/01-a", ...)` still raises `GitOpsError` (backend guard unchanged).
+  - Metrics: a replaced record (infra re-run) is not in the `verdict` inputs, and `render_results` lists it under replaced records. Guard flags are counted by category and listed.
+  - Budget in the concurrent pass: two fake driver threads share one `Budget` counter. When the shared cost crosses the limit, neither thread creates another task.
   - `mint_jwt` decodes with the secret: `aud`, `role`, `iss`, `provider_id`.
   - `child_env` drops `SWF_SUPABASE_DB_URL` and any key not on the allowlist.
   - `load_seeds()` returns 10 seeds, each with `target_test` and `description` from `seed.yaml`.
@@ -581,7 +635,7 @@ def test_parse_mem(raw: str, mb: int) -> None:
   - A drop of the SSE connection mid-stream resumes with `Last-Event-ID`, so no event is handled twice.
   - A deadline passed → the task is `cancelled`.
   - `create_task` when the user already has a non-terminal task → `CreateRefused(429, "quota_concurrent_tasks")` (the M8 detail string; the test-writer copies the exact code from `swf.api.app`).
-- [ ] `test_m9_eval_resolve_docker.py` (marks `docker`, `network`): for seeds 01 and 07, `run_controls(seed, sandbox_runner(egress_config), tmp_path)` → pristine `target_exit != 0` and not resolved; reference resolved. A tree that "fixes" by deleting the target test → restored, so not resolved, and `tests_touched` lists it.
+- [ ] `test_m9_eval_resolve_docker.py` (marks `docker`, `network`): for seeds 01 and 07, `run_controls(seed, sandbox_runner(egress_config), tmp_path)` → pristine `target_exit != 0` and not resolved; reference resolved. A tree that "fixes" by deleting the target test → the pristine test is used, so not resolved, and `tests_touched` lists it. A PR tree with a planted `pytest.py` (exits 0 on import) and a `pytest.toml` → both ignored, so the unfixed tree still does not resolve, and both are in `files_added`.
 - [ ] Run. Expected: `ModuleNotFoundError: swf_eval`.
 - [ ] Commit `M9 T7: eval harness tests`.
 
@@ -595,7 +649,7 @@ def test_parse_mem(raw: str, mb: int) -> None:
   3. `warm-cache`.
   4. Single pass: for each seed in order, user alternating A/B, create → drive → wait for terminal. After each task, check the budget.
   5. `warm-cache`.
-  6. Concurrent pass: user A takes the odd seeds and user B the even seeds. Each user creates its next task when its previous one is terminal (two driver threads). The `docker stats` sampler runs throughout.
+  6. Concurrent pass: user A takes the odd seeds and user B the even seeds. Each user creates its next task when its previous one is terminal (two driver threads). Each thread checks the shared budget before each create and every 30 s while driving (§0.15). The `docker stats` sampler runs throughout.
   7. `records_from_db` → JSON.
   8. Token/key scan of the run dir.
   9. `LocalStack` down.
@@ -609,13 +663,13 @@ def test_parse_mem(raw: str, mb: int) -> None:
 
 **Files:** `.github/workflows/m8-gvisor.yml`, `ops/ci_check_junit.py`, `tests/test_m8_ops.py` (if it asserts the uid-1000 step).
 
-- [ ] Add `feature/m9` to `on.push.branches`. Remove the step that creates or uses a uid-1000 user and chowns the checkout; pytest runs as the default runner user. Keep runsc, the firewall rule, the gate and the leftovers check. Add `SWF_PKGCACHE_DIR: ${{ runner.temp }}/pkgcache`.
+- [ ] Add `feature/m9` to `on.push.branches`. Remove the step that creates or uses a uid-1000 user and chowns the checkout; pytest runs as the default runner user (uid 1001). Its primary gid is the `docker` group, which is harmless because sandboxes get no Docker socket. Keep runsc, the firewall rule, the gate and the leftovers check. Add `SWF_PKGCACHE_DIR: ${{ runner.temp }}/pkgcache`.
 - [ ] Gate: also fail if `test_m9_workspace_owner` has no executed cases, or any `test_m9_pkgcache_docker` case is skipped.
 - [ ] Red evidence: before T2 is merged into the CI branch, the owner test fails as uid 1001. Run it once on a commit with T1 only, if cheap; otherwise state that it was not captured.
 - [ ] Push `feature/m9` to `ShreyaasAI/swf-ci` (never Fixable). Read the run with `gh run view`. Done when it shows 0 failed, `test_m8_gvisor` ran, `test_m9_workspace_owner` ran, and no leftovers.
 - [ ] Commit `M9 T9: CI runs as runner uid; M9 gates`.
 
-### T10 (test-writer + lead, live, needs Q2): seed branches on GitHub
+### T10 (test-writer + lead, live; §0.24): seed branches on GitHub
 
 **Files:** create `tests/test_m9_eval_live.py` (marks `live`, `network`; skips without `SWF_TEST_REPO` or `gh`; fails if the repo is Fixable).
 
@@ -627,7 +681,7 @@ def test_parse_mem(raw: str, mb: int) -> None:
 ### T11 (lead, live): controls, then the two passes
 
 - [ ] Preconditions:
-  - the user has OK'd this contract (Q1–Q4);
+  - the user has OK'd this contract;
   - the user has noted Portkey usage;
   - Docker Desktop resources meet §0.20;
   - no `swf.managed` leftovers.
@@ -642,7 +696,7 @@ def test_parse_mem(raw: str, mb: int) -> None:
 **Files:** `docs/software-factory/m9-results.md` (new, generated then annotated), this file (§5, Status), `docs/software-factory/implementation-plan.md` (§7, §16, §18 M9 checkbox, result line, decisions), `docs/software-factory/research-plan.md` (§8 cache wording, RQ3 and RQ9 results), `docs/software-factory/problem-specification.md` (§4 item 12, §12 Q3 host, §10 criteria ticks), `docs/HANDOVER.md`. Update each "Last updated".
 
 - [ ] `uv run python -m swf_eval report --out .m9-eval/<run-id> --write docs/software-factory/m9-results.md`. The user adds the Portkey usage after the run.
-- [ ] `uv run python -m swf_eval cleanup --out .m9-eval/<run-id>` (dry run, show the list), then `--apply`. Record the closed PRs and deleted branches in m9-results.md. `seed/*` branches stay until the user approves M9, then are deleted with the user's OK.
+- [ ] `uv run python -m swf_eval cleanup --out .m9-eval/<run-id>` (dry run, show the list), then `--apply`. Record the closed PRs and deleted branches in m9-results.md. `seed/*` branches stay until the user approves M9; then `cleanup --seeds --apply` deletes them (§0.24).
 - [ ] Commit `M9: results and close-out`. Stop for user review. The push to Fixable happens only after the user approves M9.
 
 ## 4. Definition of done (evidence commands)
@@ -683,7 +737,9 @@ To be filled in T12: run id, controls, summary table (copied from m9-results.md)
 
 ## 6. Deferred
 
-- Public deploy and link (Q1) → M10.
+- Public deploy and link → M10 (§0.23).
+- Paid tasks (2 free per day, then $1 per extra task) → a new post-M10 payments milestone (§0.26, C7). It needs a payment provider and a spec change.
+- Product default model → glm for all phases, only if the M9 DoD passes (§0.25).
 - gVisor for the eval host; Arm coverage → the M10 host decision.
 - Caching non-PyPI ecosystems (npm, crates): the seeds are Python only.
 - Multi-trial evaluation and confidence intervals (cost and PR cap).
