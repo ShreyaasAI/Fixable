@@ -52,6 +52,7 @@ def sandbox_for(
                 workspace=workspace,
                 proxy_url=net.proxy_url,
                 network=net.name,
+                index_url=net.index_url,  # seeds install through the package cache (m9 T6)
                 memory_mb=memory_mb,
                 cpus=cpus,
                 command_timeout=240,

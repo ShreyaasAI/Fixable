@@ -588,9 +588,13 @@ def test_orphan_cleanup_removes_networks_of_inactive_tasks_only(
 
 
 @pytest.fixture
-def lifecycle_config(run_id: str) -> Iterator[EgressConfig]:
+def lifecycle_config(run_id: str, tmp_path: Path) -> Iterator[EgressConfig]:
     cfg = EgressConfig(
-        proxy_name=f"swf-test-{run_id}-life-proxy", network_prefix=f"swf-test-{run_id}-life-"
+        proxy_name=f"swf-test-{run_id}-life-proxy",
+        network_prefix=f"swf-test-{run_id}-life-",
+        pkgcache_name=f"swf-test-{run_id}-life-cache",
+        pkgcache_dir=tmp_path / "pkgcache",
+        egress_network=f"swf-test-{run_id}-life-egress",
     )
     teardown_egress(cfg)
     yield cfg
@@ -654,5 +658,56 @@ def test_teardown_removes_the_proxy_only(lifecycle_config: EgressConfig, run_id:
         assert docker("container", "inspect", lifecycle_config.proxy_name).returncode != 0
         assert network_exists(net.name)  # task networks belong to their tasks
         teardown_egress(lifecycle_config)  # nothing left: must not raise
+    finally:
+        detach_task_network(lifecycle_config, task_id)
+
+
+@network
+def test_teardown_removes_the_cache_and_the_egress_network(
+    lifecycle_config: EgressConfig,
+) -> None:
+    ensure_egress(lifecycle_config)
+    assert inspect("container", lifecycle_config.pkgcache_name)["State"]["Running"] is True
+    assert inspect("network", lifecycle_config.egress_network)["Internal"] is True
+    teardown_egress(lifecycle_config)
+    assert docker("container", "inspect", lifecycle_config.pkgcache_name).returncode != 0
+    assert not network_exists(lifecycle_config.egress_network)
+    teardown_egress(lifecycle_config)  # nothing left: must not raise
+
+
+@network
+def test_task_network_gets_the_cache_and_loses_it_on_detach(
+    egress: EgressInfo, egress_config: EgressConfig, run_id: str
+) -> None:
+    task_id = f"swf-test-{run_id}-cachenet"
+    try:
+        net = attach_task_network(egress_config, task_id)
+        cache_ip = container_ip(egress_config.pkgcache_name, net.name)
+        assert net.index_url == f"http://{cache_ip}:{egress_config.pkgcache_port}/simple/"
+        assert attach_task_network(egress_config, task_id) == net  # idempotent
+    finally:
+        detach_task_network(egress_config, task_id)
+    cache_networks = inspect("container", egress_config.pkgcache_name)["NetworkSettings"][
+        "Networks"
+    ]
+    assert net.name not in cache_networks
+
+
+@network
+def test_recreated_proxy_keeps_the_cache_wired(lifecycle_config: EgressConfig, run_id: str) -> None:
+    ensure_egress(lifecycle_config)
+    task_id = f"swf-test-{run_id}-rewire"
+    attach_task_network(lifecycle_config, task_id)
+    try:
+        changed = lifecycle_config.model_copy(
+            update={"allow_domains": (*lifecycle_config.allow_domains, "example.org")}
+        )
+        info = ensure_egress(changed)
+        proxy_ip = container_ip(info.container_id, changed.egress_network)
+        cache = inspect("container", changed.pkgcache_name)
+        assert f"HTTPS_PROXY=http://{proxy_ip}:{changed.port}" in cache["Config"]["Env"]
+        net = attach_task_network(changed, task_id)
+        assert net.index_url is not None
+        assert container_ip(changed.pkgcache_name, net.name) in net.index_url
     finally:
         detach_task_network(lifecycle_config, task_id)

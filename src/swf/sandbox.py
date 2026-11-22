@@ -353,6 +353,7 @@ def open_task_sandbox(egress: EgressConfig, req: EnvRequest) -> SandboxEnv:
                 memory_mb=req.memory_mb,
                 cpus=req.cpus,
                 worker_id=worker_id,
+                index_url=net.index_url,
             )
         )
     except BaseException:

@@ -432,6 +432,31 @@ def test_egress_config_defaults() -> None:
     assert cfg.allow_domains == ("pypi.org", "files.pythonhosted.org")
 
 
+def test_egress_config_pkgcache_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SWF_PKGCACHE_DIR", raising=False)
+    cfg = EgressConfig()
+    assert cfg.pkgcache is True
+    assert cfg.pkgcache_name == "swf-pkgcache"
+    assert cfg.pkgcache_port == 3141
+    assert cfg.egress_network == "swf-egress"
+    assert cfg.pkgcache_image.startswith("python:3.12-slim@sha256:")
+    assert len(cfg.pkgcache_image.rsplit(":", 1)[1]) == 64
+    assert cfg.pkgcache_dir == Path("pkgcache").resolve()
+
+
+def test_egress_config_pkgcache_dir_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SWF_PKGCACHE_DIR", str(tmp_path / "cache"))
+    assert EgressConfig().pkgcache_dir == (tmp_path / "cache").resolve()
+
+
+@pytest.mark.parametrize("bad", ["a,b", 'a"b', "a\nb"])
+def test_egress_config_rejects_mount_unsafe_pkgcache_dir(tmp_path: Path, bad: str) -> None:
+    with pytest.raises(ValidationError):
+        EgressConfig(pkgcache_dir=tmp_path / bad)
+
+
 BAD_DOMAINS = [
     "",
     " ",
