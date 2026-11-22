@@ -1,7 +1,7 @@
 # Handover
 
 - **Purpose:** Bring a new session from zero to the next action. This file is the project's state, not its content; details live in the artifacts it points to.
-- **Last updated:** 2026-11-21
+- **Last updated:** 2026-11-22
 - **Status:** Current
 
 ## Where the project is
@@ -19,14 +19,17 @@
 | M5 evidence, harness re-run, read-only backstop | **Approved, merged to `main`** (`1235cdc`). Contract `docs/software-factory/m5-contract.md` (§12 amendments override §0–§8) |
 | M6 GitHub clone, clean-clone apply, PR | **Approved, merged to `main`** (`1235cdc`). Live PR: https://github.com/ShreyaasAI/swf-pr-sandbox/pull/1. Contract `docs/software-factory/m6-contract.md` |
 | M7 guardrails (input judge + regex, output guard, Portkey opt-in) | **Approved (user, 2026-11-21), merged to `main`**. Contract `docs/software-factory/m7-contract.md` (§13 A1–A5 override §0–§12). Results: implementation-plan §18 M7 |
-| M8–M10 | Not started |
+| M8 abuse controls + gVisor | **Done, awaiting user approval and merge** (branch `feature/m8`). Contract `docs/software-factory/m8-contract.md` (§13 A1–A5 override §0–§6; §5 results). gVisor DoD ran on GitHub Actions, not Oracle (needs a card) |
+| M9–M10 | Not started |
 
-Repo state: `main` contains M0–M7. **Do not push until M9 is complete** (user). Work in a worktree, not on `main`. Main checkout's `.env` is untracked: never `git add -A` on `main`. Docker Desktop is running on the dev machine (x86_64).
+Repo state: `main` contains M0–M7; M8 is on `feature/m8`. **Do not push to `ShreyaasAI/Fixable` until M9 is complete** (user). `ShreyaasAI/swf-ci` is the private CI-only repo. Work in a worktree, not on `main`. Main checkout's `.env` is untracked: never `git add -A` on `main`. Docker Desktop is running on the dev machine (x86_64).
 
 ## Waiting on the user
 
 Pending now:
-1. Go-ahead to start M8.
+1. Approve M8 and merge `feature/m8`.
+2. Quota numbers (still the spec defaults: 5 tasks/day, $1/task, $3/day, 1 concurrent).
+3. At M9: choose a $0 host with no credit card (Oracle dropped).
 
 Open risk (M7): guard latency p50 6.2 s, p95 50 s per judged text, far above research-plan A3 target (≤500 ms). Accepted for now; parallel judging and budget deferred (m7-contract §12).
 
@@ -34,7 +37,7 @@ Settled: the Supabase Free project is created in M8 (local Postgres until then);
 
 ## Next action
 
-M7 approved and merged (2026-11-21). Start **M8** (abuse controls + gVisor) from implementation-plan §18. No push before M9.
+M8 is done and awaits user approval and merge (2026-11-22). Next is **M9** (concurrency + evaluation): read implementation-plan §18 M9. Carried risks and open items: `m8-contract.md` §5. No push to Fixable before M9 is done.
 
 ## Reading guide
 
@@ -50,6 +53,7 @@ Read by need, not front to back:
 | M5 interfaces and amendments (working contract) | `docs/software-factory/m5-contract.md` — §12 amendments override §0–§8 |
 | M6 interfaces and decisions (working contract) | `docs/software-factory/m6-contract.md` — §0 decisions; §4 `swf.pr`; §11 deferred |
 | M7 interfaces, decisions and amendments (working contract) | `docs/software-factory/m7-contract.md` — §13 amendments A1–A5 override §0–§12; §11 close-out |
+| M8 interfaces, decisions and amendments (working contract) | `docs/software-factory/m8-contract.md` — §13 amendments A1–A5 override §0–§6; §5 results and carried risks |
 | The original process rules from the user | `PROMPT.md` |
 | Baseline for the agent's system prompt | `system_prompts/Cursor_*` (adapt the behavioural rules; the tool schemas don't apply) |
 

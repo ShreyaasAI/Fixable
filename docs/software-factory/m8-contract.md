@@ -4,7 +4,7 @@
 
 - **Purpose:** The interface contract and ordered task list for M8. If something here is wrong, report it. Do not silently diverge.
 - **Last updated:** 2026-11-22
-- **Status:** Draft v2: §13 amendments (user, 2026-11-21) override §0–§6. Branch `feature/m8` (worktree `.claude/worktrees/m8-plan`), on top of `6e45a13` (M7).
+- **Status:** Delivered, awaiting user review. Draft v2: §13 amendments (user, 2026-11-21) override §0–§6. Branch `feature/m8` (worktree `.claude/worktrees/m8-plan`), on top of `6e45a13` (M7).
 - **Sources:** plan §4, §9, §15, §16, §18 M8; spec §4 item 1a, §8, §10, §12 Q1–2, §13; research plan §6 item 9, §7.4, §8; m2 §0, §4, §9 (A1, A5, deferred list); m4 §12; m6 §11; m7 §13.
 
 **Goal:** A user over quota is refused before a task starts. API abuse gets HTTP 429. An admin can stop one user's tasks or all tasks, and running containers are gone within 30 s. The sandbox suite passes under gVisor `runsc` on the Oracle VM.
@@ -702,7 +702,21 @@ ssh <user>@<vm> 'cd ~/swf && bash ops/vm-test.sh tests/test_m8_kill_docker.py te
 
 ## 5. Results
 
-(Filled in at T14.)
+**M8 delivered (2026-11-22), awaiting user review.** Evidence host is GitHub Actions, not the Oracle VM (A5).
+
+- `AbuseLimits` at spec defaults [Q]: 5 tasks/day, $1/task, $3/day, 1 concurrent. The user has not given new numbers; still open.
+- Token-bucket API rate limit: 120/min burst 60; task creates 6/min burst 3. Valid for one process only (`--workers 1`).
+- Quota refusal before start: 429 `quota_*` with `Retry-After` to UTC midnight (concurrent: none). 503 `service_paused` when paused. 403 `account_disabled` is re-checked inside the insert transaction.
+- Admin kill (per user and global) and resume. Worker stop loop polls every <=10 s (default 5 s). Claim skips disabled owners. `system_state` migration added.
+- Kill measured 2.3 s and 1.9 s locally (limit 30 s).
+- gVisor: runtime chosen by `SWF_SANDBOX_RUNTIME`; `check_runtime` fails fast. Host firewall rule `br-+` DROP keeps sandboxes off host services.
+- **CI run (A5).** Private repo `ShreyaasAI/swf-ci`, x86_64 ubuntu-24.04, systrap, runsc release-20261116.0, no secrets, `-m "not live"`.
+  - First run (44985961092): 1774 passed, 10 skipped (1 inverse runsc-missing test, 9 supabase without a URL), 0 failed, 7m43s.
+  - Host isolation before the firewall rule: 2 failed (red). After the rule: green. The gate was then fixed to allow the inverse skip.
+  - CI rerun: <pending>
+- **Supabase (T6b).** Free project "Fixable", ref `yztwunzllretrgsrauuf`. 5 migrations applied via MCP. Advisor: only INFO `rls_enabled_no_policy` on `github_tokens` and `system_state` (intended). `tests/test_m8_supabase.py`: 9 passed in 21.19s.
+- **Risks carried:** guard latency (M7); `docker rm` hang may delay serial kills; 2 s test timeouts may flake on slow hosts; persisted iptables rules untested across reboot; Arm untested; `ops/vm-*.sh` kept for a future Linux host, untested on a real VM.
+- **Open for M9:** host choice (must be $0, no credit card); quota numbers; Node 20 action deprecation warning (bump actions later).
 
 ## 6. Deferred
 
