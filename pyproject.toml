@@ -40,6 +40,8 @@ addopts = "-q -rs"
 markers = [
     "docker: needs a working Docker daemon (auto-skipped, with a reason, when `docker info` fails)",
     "network: needs internet access (skipped when SWF_SKIP_NETWORK=1)",
+    "gvisor: needs gVisor (SWF_SANDBOX_RUNTIME=runsc and runsc listed by `docker info`); auto-skipped otherwise",
+    "supabase: checks a real Supabase project; skips itself without SWF_SUPABASE_DB_URL",
     "live: calls external services (models or GitHub); each live test skips itself without its credentials",
 ]
 

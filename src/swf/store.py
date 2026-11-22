@@ -26,6 +26,7 @@ from pydantic import BaseModel, field_validator
 from swf import states
 from swf.db import Conn
 from swf.preflight import Capacity, Limits, PreflightResult, Reservation, fits
+from swf.settings import AbuseLimits
 
 TASK_STATUSES = (
     "created",
@@ -755,10 +756,13 @@ def claim_next_task(
     queue (no skipping, so no starvation). The lease is set from the DB clock.
     """
     conn.execute("select pg_advisory_xact_lock(hashtext('swf.admission'))")
+    if tasks_paused(conn):
+        return None
     head = conn.execute(
         "select id, coalesce(reservation_mb, %s) as mb, coalesce(reservation_cpu, %s) as cpu"
-        " from public.tasks where status = 'queued' order by created_seq limit 1"
-        " for update skip locked",
+        " from public.tasks t where status = 'queued' and not exists"
+        " (select 1 from public.profiles p where p.user_id = t.user_id and p.disabled)"
+        " order by created_seq limit 1 for update of t skip locked",
         [_DEFAULT_RESERVATION_MB, _DEFAULT_RESERVATION_CPU],
     ).fetchone()
     if head is None:
@@ -825,3 +829,130 @@ def active_task_ids(conn: Conn) -> list[str]:
         [list(ACTIVE_STATUSES)],
     ).fetchall()
     return [str(r["id"]) for r in rows]
+
+
+# --- abuse controls (M8, backend) ---------------------------------------------------------
+
+
+def check_quota(conn: Conn, user_id: uuid.UUID, day: date, limits: AbuseLimits) -> str | None:
+    """First quota the user has reached on `day`, or None (m8-contract §0.8, §0.9).
+
+    Takes the per-user advisory lock, so a check followed by `create_task` in the same
+    transaction cannot race a parallel create.
+    """
+    conn.execute("select pg_advisory_xact_lock(hashtext('swf.quota:' || %s::text))", [user_id])
+    usage = get_usage(conn, user_id, day)
+    if usage.tasks >= limits.tasks_per_day:
+        return "quota_tasks_per_day"
+    if usage.cost_usd >= limits.cost_per_day_usd:
+        return "quota_cost_per_day"
+    row = conn.execute(
+        "select count(*) as n from public.tasks where user_id = %s and status <> all(%s)",
+        [user_id, list(TERMINAL_STATUSES)],
+    ).fetchone()
+    assert row is not None
+    return "quota_concurrent_tasks" if row["n"] >= limits.concurrent_tasks else None
+
+
+def tasks_paused(conn: Conn) -> bool:
+    """Read the global pause under a share lock, so a concurrent global kill's UPDATE waits for
+    this transaction (an in-flight create) and then sees its task."""
+    row = conn.execute("select tasks_paused from public.system_state for share").fetchone()
+    if row is None:
+        raise RuntimeError("system_state row missing")
+    return bool(row["tasks_paused"])
+
+
+def admin_kill(conn: Conn, admin_id: uuid.UUID, user_id: uuid.UUID | None) -> list[uuid.UUID]:
+    """Disable one user (or pause everything) and cancel the non-terminal tasks in scope.
+
+    Returns the cancelled ids in created order (m8-contract §0.11).
+    """
+    if user_id is not None:
+        if (
+            conn.execute(
+                "update public.profiles set disabled = true where user_id = %s returning user_id",
+                [user_id],
+            ).fetchone()
+            is None
+        ):
+            raise NotFound
+    else:
+        if (
+            conn.execute(
+                "update public.system_state set tasks_paused = true, updated_at = now(),"
+                " updated_by = %s returning id",
+                [admin_id],
+            ).fetchone()
+            is None
+        ):
+            raise RuntimeError("system_state row missing")
+    rows = conn.execute(
+        "select id from public.tasks where status <> all(%s)"
+        " and (%s::uuid is null or user_id = %s) order by created_seq for update",
+        [list(TERMINAL_STATUSES), user_id, user_id],
+    ).fetchall()
+    ids: list[uuid.UUID] = []
+    for r in rows:
+        _expire_pending(conn, r["id"])
+        transition_task(conn, r["id"], "cancelled", error="admin_kill")
+        ids.append(r["id"])
+    scope = "global" if user_id is None else "user"
+    target = "global" if user_id is None else str(user_id)
+    _audit(conn, admin_id, "admin.kill", target, {"scope": scope, "cancelled": len(ids)})
+    return ids
+
+
+def admin_resume(conn: Conn, admin_id: uuid.UUID, user_id: uuid.UUID | None) -> None:
+    """Undo `admin_kill`: re-enable the user, or clear the global pause."""
+    if user_id is not None:
+        if (
+            conn.execute(
+                "update public.profiles set disabled = false where user_id = %s returning user_id",
+                [user_id],
+            ).fetchone()
+            is None
+        ):
+            raise NotFound
+    else:
+        if (
+            conn.execute(
+                "update public.system_state set tasks_paused = false, updated_at = now(),"
+                " updated_by = %s returning id",
+                [admin_id],
+            ).fetchone()
+            is None
+        ):
+            raise RuntimeError("system_state row missing")
+    scope = "global" if user_id is None else "user"
+    target = "global" if user_id is None else str(user_id)
+    _audit(conn, admin_id, "admin.resume", target, {"scope": scope})
+
+
+def stopped_task_ids(conn: Conn, task_ids: Collection[uuid.UUID]) -> list[uuid.UUID]:
+    """The ids among `task_ids` whose task is terminal (the worker stops their containers)."""
+    if not task_ids:
+        return []
+    rows = conn.execute(
+        "select id from public.tasks where id = any(%s) and status = any(%s)",
+        [list(task_ids), list(TERMINAL_STATUSES)],
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def task_cost_budget(conn: Conn, task_id: uuid.UUID, limits: AbuseLimits) -> float:
+    """Spend left for the task: the smaller of the per-task and the owner's per-day remainder
+    (the day is the task's UTC creation day, as in `add_task_cost`). May be <= 0."""
+    row = conn.execute(
+        "select t.cost_usd as task_cost, coalesce(q.cost_usd, 0) as day_cost"
+        " from public.tasks t left join public.quotas_usage q"
+        " on q.user_id = t.user_id and q.day = (t.created_at at time zone 'UTC')::date"
+        " where t.id = %s",
+        [task_id],
+    ).fetchone()
+    if row is None:
+        raise NotFound
+    return min(
+        limits.cost_per_task_usd - float(row["task_cost"]),
+        limits.cost_per_day_usd - float(row["day_cost"]),
+    )

@@ -41,6 +41,7 @@ from swf.egress import EgressConfig, EgressInfo, ensure_egress, teardown_egress
 from swf.github import GitHubClient
 from swf.images import RegistryClient
 from swf.preflight import PreflightService
+from swf.settings import AbuseLimits
 from swf.tokens import TokenCipher
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -227,6 +228,19 @@ def registry() -> FakeRegistry:
     return reg
 
 
+# Every AbuseLimits field at 1_000_000: M1-M7 API tests never hit a quota or rate limit (m8 s2).
+PERMISSIVE = AbuseLimits(
+    tasks_per_day=1_000_000,
+    cost_per_task_usd=1_000_000.0,
+    cost_per_day_usd=1_000_000.0,
+    concurrent_tasks=1_000_000,
+    api_per_minute=1_000_000.0,
+    api_burst=1_000_000,
+    create_per_minute=1_000_000.0,
+    create_burst=1_000_000,
+)
+
+
 def build_deps(
     db: Database,
     verifier: JwtVerifier,
@@ -234,11 +248,19 @@ def build_deps(
     github: FakeGitHub,
     registry: FakeRegistry,
     clock: Clock,
+    *,
+    abuse: AbuseLimits = PERMISSIVE,
 ) -> AppDeps:
     gh = GitHubClient(base_url="https://api.github.com", transport=github.transport())
     preflight = PreflightService(github=gh, registry=RegistryClient(transport=registry.transport()))
     return AppDeps(
-        db=db, verifier=verifier, cipher=cipher, github=gh, preflight=preflight, clock=clock
+        db=db,
+        verifier=verifier,
+        cipher=cipher,
+        github=gh,
+        preflight=preflight,
+        clock=clock,
+        abuse=abuse,
     )
 
 
@@ -301,7 +323,27 @@ def _docker_unavailable_reason() -> str | None:
     return None
 
 
+def _gvisor_available() -> bool:
+    if os.environ.get("SWF_SANDBOX_RUNTIME") != "runsc":
+        return False
+    try:
+        run = subprocess.run(
+            ["docker", "info", "--format", "{{json .Runtimes}}"],
+            capture_output=True, text=True, timeout=30,
+        )  # fmt: skip
+        return run.returncode == 0 and "runsc" in json.loads(run.stdout.strip() or "{}")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    gvisor_items = [i for i in items if i.get_closest_marker("gvisor")]
+    if gvisor_items and not _gvisor_available():
+        skip_gv = pytest.mark.skip(
+            reason="gVisor unavailable (SWF_SANDBOX_RUNTIME!=runsc or runsc not in docker info)"
+        )
+        for item in gvisor_items:
+            item.add_marker(skip_gv)
     docker_items = [i for i in items if i.get_closest_marker("docker")]
     if docker_items:
         reason = _docker_unavailable_reason()

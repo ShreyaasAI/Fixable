@@ -1,4 +1,9 @@
-"""Production entry point: `uv run uvicorn swf.api.main:create_app_from_env --factory`."""
+"""Production entry point: `uv run uvicorn swf.api.main:create_app_from_env --factory --workers 1`.
+
+Run exactly one API process (`--workers 1`): the rate limiters are in-process token buckets, so
+more workers would each hold their own buckets (m8-contract §0.7). Quota and rate-limit values
+come from `SWF_QUOTA_*` / `SWF_RATE_*` (`AbuseLimits.from_env`).
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ from swf.db import Database
 from swf.github import GitHubClient
 from swf.images import RegistryClient
 from swf.preflight import PreflightService
-from swf.settings import Settings
+from swf.settings import AbuseLimits, Settings
 from swf.tokens import TokenCipher
 
 
@@ -31,6 +36,7 @@ def create_app_from_env() -> FastAPI:
         cipher=TokenCipher(settings.token_encryption_key),
         github=github,
         preflight=PreflightService(github=github, registry=RegistryClient()),
+        abuse=AbuseLimits.from_env(),
     )
 
     @asynccontextmanager

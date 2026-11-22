@@ -1,0 +1,39 @@
+"""CI gate (m8-contract §13 A5): gVisor tests ran and passed; nothing skipped for lack of runsc or
+Docker. Usage: python3 ops/ci_check_junit.py <junit.xml>"""
+
+from __future__ import annotations
+
+import sys
+import xml.etree.ElementTree as ET
+
+BAD_SKIPS = ("gVisor unavailable", "Docker unavailable")
+
+
+def _in_gvisor(classname: str) -> bool:
+    return classname == "tests.test_m8_gvisor" or classname.startswith("tests.test_m8_gvisor.")
+
+
+def main(path: str) -> int:
+    cases = list(ET.parse(path).getroot().iter("testcase"))
+    errors: list[str] = []
+    gvisor = [c for c in cases if _in_gvisor(c.get("classname", ""))]
+    ran = [c for c in gvisor if c.find("skipped") is None]
+    if not ran:
+        errors.append("no tests.test_m8_gvisor case ran")
+    for case in cases:
+        name = f"{case.get('classname')}::{case.get('name')}"
+        for skip in case.iter("skipped"):
+            # A gvisor test may skip only for the inverse case ("runsc is installed ...").
+            msg = skip.get("message", "")
+            if any(b in msg for b in BAD_SKIPS):
+                errors.append(f"skipped: {name}: {msg[:200]}")
+        if case in gvisor and (case.find("failure") is not None or case.find("error") is not None):
+            errors.append(f"failed: {name}")
+    print(f"{len(cases)} cases, {len(ran)}/{len(gvisor)} test_m8_gvisor ran")
+    for line in errors:
+        print(line, file=sys.stderr)
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1]))

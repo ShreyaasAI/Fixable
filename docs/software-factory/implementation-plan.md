@@ -1,7 +1,7 @@
 # Web Coding Agent — Implementation Plan
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
-- **Last updated:** 2026-11-21
+- **Last updated:** 2026-11-22
 - **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 and M6 approved, merged to `main` (`1235cdc`); M7 implemented on `m7-check`, awaiting user review (2026-11-21)
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
@@ -70,6 +70,7 @@ All endpoints require a Supabase JWT, except `/healthz`. Every mutating call wri
 | DELETE | `/v1/tasks/{id}` | Delete task + workspace |
 | GET | `/v1/tasks/{id}/evidence` | Evidence bundle |
 | POST | `/v1/admin/kill` | Kill switch `{user_id?}` (admin) |
+| POST | `/v1/admin/resume` | Undo a kill `{user_id?}` (admin; M8 A2) |
 
 There is no endpoint that pushes, merges, or chooses a branch name.
 
@@ -123,6 +124,7 @@ The version is pinned in `pyproject.toml`; subclass contract tests fail loudly o
 | `evidence` | `task_id`, `kind` (baseline / post / suite / harness_rerun / diff), `command`, `exit_code`, `output_ref`, `duration_ms` |
 | `audit_log` | `id`, `user_id`, `action`, `target`, `payload`, `created_at` (append-only) |
 | `quotas_usage` | `user_id`, `day`, `tasks`, `cost_usd` |
+| `system_state` | singleton: `tasks_paused`, `updated_at`, `updated_by` (backend only; M8) |
 
 **Statuses:** `created, queued, preparing, investigating, awaiting_plan_approval, executing, awaiting_command_approval, awaiting_input, verifying, confirming, opening_pr, completed, rejected, failed, interrupted, cancelled`.
 
@@ -178,7 +180,7 @@ Token backend-only + encrypted · clean-clone PR, hooks off · branch computed s
 ## 16. Rollout
 
 1. Local dev (Windows + Docker Desktop) through M7.
-2. Oracle Always Free VM + Supabase Free project for M8–M9.
+2. Supabase Free project from M8. Host for M9: open, must be $0 with no credit card (Oracle dropped 2026-11-22).
 3. Open beta after M10 with quotas on. A free-tier keep-alive (scheduled health ping) prevents Supabase pausing.
 
 ## 17. Non-goals (MVP)
@@ -272,8 +274,9 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - **Result (2026-11-21, `m7-check`, awaiting review):** non-live 238 passed; live 3 passed; ruff/format/mypy clean. Live corpus (102 items): injection 20/22 (91%), toxicity 12/12, malicious 14/14, pii 12/12, secret 10/10; clean FP 0/32 (0%); guard_error 1; latency p50 6.2 s, p95 50 s, max 194 s per judged text. Open risk: latency misses research-plan A3 target (≤500 ms). Amendments: `m7-contract.md` §13.
 
 ### M8 — Abuse controls + gVisor
-- [ ] Tests: over-quota refused pre-start; 429 rate limiting; kill switch stops tasks ≤ 30 s; sandbox suite passes under `runsc`
-- **DoD:** tests green on the Oracle VM.
+- [x] Tests: over-quota refused pre-start; 429 rate limiting; kill switch stops tasks ≤ 30 s; sandbox suite passes under `runsc`
+- **DoD:** tests green on the Oracle VM. **Changed [D, 2026-11-22, user]:** the Oracle VM needs a credit card, so the DoD ran on GitHub Actions (private repo `ShreyaasAI/swf-ci`, x86_64, runsc). Arm is untested.
+- **Result (2026-11-22, awaiting review):** CI run 44985961092: 1774 passed, 10 skipped, 0 failed (7m43s). Host isolation red before the firewall rule, green after. CI run 3 44987517565 green: 1774 passed, 0 failed (after a gVisor pids-limit test fix, `m8-contract.md` §5). Local: 1778 passed, 0 failed. Kill measured 2.3 s / 1.9 s locally (limit 30 s). Supabase Free project "Fixable" (`yztwunzllretrgsrauuf`): 5 migrations applied, 9 Supabase tests passed. Quota values remain the spec defaults [Q]. Adds `POST /v1/admin/resume`, table `system_state`, setting `SWF_SANDBOX_RUNTIME`. Carried risks and amendments: `m8-contract.md` §5, §13.
 
 ### M9 — Concurrency + evaluation (Oracle VM)
 - [ ] 10 seeded repos through the full pipeline; 2 concurrent tasks

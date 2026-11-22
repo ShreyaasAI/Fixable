@@ -16,19 +16,32 @@ comment when idle, and ends once the task is terminal and every event has been s
 `GET /v1/tasks/{id}/evidence` (M5) lists the task's evidence rows (as_user + RLS); the full
 outputs stay in the workspace (`output_ref` is relative to it).
 
-Deferred: task delete + workspace (M6),
-quota enforcement / rate limits / kill switch (M8).
+M8 abuse controls (m8-contract §1.6):
+- Every `/v1` route spends one token of the user's `api` bucket after auth (an SSE stream
+  spends one when it opens); a refusal is 429 `rate_limited` with `Retry-After`. `/healthz` is
+  not limited, and a bad token is a 401 before any limiter runs. The limiters are in-process,
+  so run the API as one process (`--workers 1`, §0.7).
+- `POST /v1/tasks` also spends a `create` token, then checks the global pause (503
+  `service_paused`) and the user's quotas (429 `quota_*`) before pre-flight, so a refused
+  create makes no GitHub call. The insert transaction repeats the disabled, pause and quota
+  checks under locks before `create_task`; a refusal there rolls back (no task, no audit row).
+- `POST /v1/admin/kill` and `POST /v1/admin/resume` (admins only) disable or re-enable one
+  user, or pause or resume all tasks; a kill cancels every non-terminal task in scope.
+
+Deferred: task delete + workspace (M6).
 """
 
 import json
+import math
 import re
 import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
-from datetime import UTC, date, datetime
-from typing import Annotated
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as dt_time
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -36,7 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from swf import store
 from swf.auth import AuthError, JwtVerifier, Principal
-from swf.db import Database
+from swf.db import Conn, Database
 from swf.github import GitHubAuthError, GitHubClient, GitHubError
 from swf.preflight import (
     BranchNotFound,
@@ -45,10 +58,14 @@ from swf.preflight import (
     RepoNotFound,
     RepoNotWritable,
 )
+from swf.ratelimit import RateLimiter
+from swf.settings import AbuseLimits
 from swf.tokens import TokenCipher, TokenDecryptError
 
 REPO_RE = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 BRANCH_CHARS_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+_DAILY_QUOTAS = frozenset({"quota_tasks_per_day", "quota_cost_per_day"})
+Scope = Literal["user", "global"]
 
 
 def _utcnow() -> datetime:
@@ -65,6 +82,8 @@ class AppDeps:
     clock: Callable[[], datetime] = _utcnow
     sse_poll_seconds: float = 1.0
     sse_keepalive_seconds: float = 15.0
+    abuse: AbuseLimits = field(default_factory=AbuseLimits)
+    monotonic: Callable[[], float] = time.monotonic
 
     def today(self) -> date:
         return self.clock().astimezone(UTC).date()
@@ -157,6 +176,19 @@ class RepoOut(BaseModel):
     can_push: bool
 
 
+class KillIn(_Body):
+    user_id: uuid.UUID | None = None
+
+
+class ResumeOut(BaseModel):
+    scope: Scope
+    user_id: uuid.UUID | None
+
+
+class KillOut(ResumeOut):
+    cancelled: list[uuid.UUID]
+
+
 # --- app -----------------------------------------------------------------------------------
 
 
@@ -166,6 +198,39 @@ def create_app(
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="SWF API", version="0.1.0", lifespan=lifespan)
+    abuse = deps.abuse
+    api_limiter = RateLimiter(
+        per_minute=abuse.api_per_minute, burst=abuse.api_burst, clock=deps.monotonic
+    )
+    create_limiter = RateLimiter(
+        per_minute=abuse.create_per_minute, burst=abuse.create_burst, clock=deps.monotonic
+    )
+
+    def _limit(limiter: RateLimiter, user_id: uuid.UUID) -> None:
+        wait = limiter.hit(user_id)
+        if wait is not None:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "rate_limited",
+                headers={"Retry-After": str(max(1, math.ceil(wait)))},
+            )
+
+    def _quota_refused(code: str) -> HTTPException:
+        headers = None
+        if code in _DAILY_QUOTAS:
+            now = deps.clock().astimezone(UTC)
+            midnight = datetime.combine(now.date() + timedelta(days=1), dt_time(0), UTC)
+            wait = math.ceil((midnight - now).total_seconds())
+            headers = {"Retry-After": str(max(1, wait))}
+        return HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, code, headers=headers)
+
+    def _admission(conn: Conn, user_id: uuid.UUID) -> None:
+        """Global pause (503), then the user's quotas (429): §1.6 steps 2-3 and 5."""
+        if store.tasks_paused(conn):
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "service_paused")
+        code = store.check_quota(conn, user_id, deps.today(), abuse)
+        if code is not None:
+            raise _quota_refused(code)
 
     @app.exception_handler(store.NotFound)
     def _not_found(_request: Request, _exc: store.NotFound) -> JSONResponse:
@@ -191,9 +256,17 @@ def create_app(
             profile = store.ensure_profile(conn, principal.user_id, principal.github_login)
         if profile.disabled:
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail="account_disabled")
+        _limit(api_limiter, principal.user_id)
         return CurrentUser(principal=principal, profile=profile)
 
     User = Annotated[CurrentUser, Depends(current_user)]
+
+    def admin_user(user: User) -> CurrentUser:
+        if not user.profile.is_admin:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "admin_only")
+        return user
+
+    Admin = Annotated[CurrentUser, Depends(admin_user)]
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -257,7 +330,10 @@ def create_app(
 
     @app.post("/v1/tasks", status_code=status.HTTP_201_CREATED)
     def create_task(user: User, body: TaskCreate) -> TaskCreated:
+        _limit(create_limiter, user.id)
         with deps.db.backend() as conn:
+            # Pre-check, so a paused service or an over-quota user causes no GitHub call.
+            _admission(conn, user.id)
             blob = store.get_encrypted_github_token(conn, user.id)
             capacity = store.capacity_snapshot(conn)
         if blob is None:
@@ -282,6 +358,16 @@ def create_app(
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "github_unavailable") from None
         rejected = result.decision == "reject"
         with deps.db.backend() as conn:
+            # Re-check under locks; raising here rolls the transaction back. The profile share
+            # lock makes a concurrent per-user kill wait for this commit (and then cancel the new
+            # task); `tasks_paused` does the same for a global kill; `check_quota` holds the
+            # per-user advisory lock, so parallel creates cannot both pass (§0.8).
+            row = conn.execute(
+                "select disabled from public.profiles where user_id = %s for share", [user.id]
+            ).fetchone()
+            if row is None or row["disabled"]:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "account_disabled")
+            _admission(conn, user.id)
             task = store.create_task(
                 conn,
                 user.id,
@@ -393,5 +479,21 @@ def create_app(
     def cancel(user: User, task_id: uuid.UUID) -> store.Task:
         with deps.db.backend() as conn:
             return store.cancel_task(conn, user.id, task_id)
+
+    @app.post("/v1/admin/kill")
+    def admin_kill(admin: Admin, body: KillIn) -> KillOut:
+        if body.user_id == admin.id:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "cannot_kill_self")
+        with deps.db.backend() as conn:
+            cancelled = store.admin_kill(conn, admin.id, body.user_id)
+        scope: Scope = "global" if body.user_id is None else "user"
+        return KillOut(scope=scope, user_id=body.user_id, cancelled=cancelled)
+
+    @app.post("/v1/admin/resume")
+    def admin_resume(admin: Admin, body: KillIn) -> ResumeOut:
+        with deps.db.backend() as conn:
+            store.admin_resume(conn, admin.id, body.user_id)
+        scope: Scope = "global" if body.user_id is None else "user"
+        return ResumeOut(scope=scope, user_id=body.user_id)
 
     return app
