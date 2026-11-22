@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development. Tasks run in order, one implementer each, and each is followed by a spec review and a code-quality review. Steps use checkboxes (`- [ ]`).
 
 - **Purpose:** The interface contract and ordered task list for M8. If something here is wrong, report it. Do not silently diverge.
-- **Last updated:** 2026-11-21
+- **Last updated:** 2026-11-22
 - **Status:** Draft v2: §13 amendments (user, 2026-11-21) override §0–§6. Branch `feature/m8` (worktree `.claude/worktrees/m8-plan`), on top of `6e45a13` (M7).
 - **Sources:** plan §4, §9, §15, §16, §18 M8; spec §4 item 1a, §8, §10, §12 Q1–2, §13; research plan §6 item 9, §7.4, §8; m2 §0, §4, §9 (A1, A5, deferred list); m4 §12; m6 §11; m7 §13.
 
@@ -758,3 +758,20 @@ ssh <user>@<vm> 'cd ~/swf && bash ops/vm-test.sh tests/test_m8_kill_docker.py te
   - The test target is `ubuntu@swf-vm` if bootstrap reports test user `ubuntu`, else `swf@swf-vm`. Bootstrap copies `ubuntu`'s `authorized_keys` to `swf`.
   - `bash ops/vm-sync.sh <target> feature/m8`, `ssh -o BatchMode=yes <target> 'cd ~/swf && bash ops/vm-test.sh'`, then `scp` the log back.
 - The user's go-ahead for these VM changes is this amendment.
+
+**A5 Oracle VM dropped; the gVisor DoD run moves to GitHub Actions (user, 2026-11-22; changes T6b, T13, §4; supersedes A4's VM steps).** The Oracle VM needs a credit card.
+- CI repo: a new private repo `ShreyaasAI/swf-ci`. The lead creates it and pushes `feature/m8` there. `ShreyaasAI/Fixable` is untouched; "no push to Fixable before M9" still holds.
+- Runner: hosted x86_64 `ubuntu-24.04`. arm64 runners are not free for private repos, so Arm coverage is deferred to the M9 host decision.
+- Workflow: `.github/workflows/m8-gvisor.yml`. Triggers: `workflow_dispatch` and push to `feature/m8` only. Job timeout 45 min, pytest step 35 min (free tier: 2000 min/month).
+- No repo secrets. The run is `-m "not live"` only; checkout uses `persist-credentials: false`.
+- Steps:
+  - Install runsc from the official gVisor apt repo, then `sudo runsc install`, restart Docker, and check that `docker info` lists runsc.
+  - Ensure something listens on host port 22 (install and start `openssh-server` if not), so the `gateway:22` case of `test_m8_host_isolation` is meaningful.
+  - Run `test_m8_host_isolation` once before the firewall rule (red evidence, not gating). Then add `iptables -I INPUT 1 -i br-+ -j DROP` (and the ip6tables rule).
+  - Run pytest as a uid-1000 user (reuse one or create `swf`, add it to the docker group, chown the checkout to it). Sandboxes write the bind-mounted workspace as `1000:1000`, and the runner user is uid 1001 (§0.15).
+  - Run `PYTHONDONTWRITEBYTECODE=1 SWF_SANDBOX_RUNTIME=runsc uv run pytest -o addopts="" -q -m "not live" -rs --junitxml=...`, with uv pinned to 0.13.5 and Python from `.python-version`.
+  - Gate: `ops/ci_check_junit.py` fails if `test_m8_gvisor` has no cases, any of its cases is skipped or failed, or any test is skipped for "gVisor unavailable" or "Docker unavailable".
+  - Upload the log and the JUnit XML as an artifact. Fail if any `label=swf.test=1` or `label=swf.managed=1` container is left.
+- T13 is now "CI run": push to `swf-ci`, then read the run result and artifact. Done when the same conditions as T13 hold, measured on the CI runner. `ops/vm-*.sh` stay for a future Linux host; the runsc install is inlined in the workflow rather than factored out, because `vm-bootstrap.sh` is copied to a host as a single file.
+- Supabase (T6b): the existing empty Free project "Fixable" (ref `yztwunzllretrgsrauuf`) is used instead of a new one. All 5 migrations were applied by the lead on 2026-11-22 via MCP. The security advisor shows only INFO "RLS enabled, no policy" for `github_tokens` and `system_state`, which is intended (backend-only tables). The T6b pytest evidence run waits for the user to add `SWF_SUPABASE_DB_URL` to `.env`.
+- M9 host: open question, decided at M9.

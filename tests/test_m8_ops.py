@@ -82,3 +82,41 @@ def test_test_runner_uses_gvisor_and_skips_live() -> None:
 def test_gitignore_covers_the_vm_log_dir() -> None:
     lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert ".m8-vm/" in [line.strip() for line in lines]
+
+
+WORKFLOW = ROOT / ".github" / "workflows" / "m8-gvisor.yml"
+
+
+def _workflow() -> str:
+    assert WORKFLOW.is_file(), f"{WORKFLOW} does not exist"
+    text = WORKFLOW.read_bytes().decode("utf-8")
+    assert "\r" not in text
+    return text
+
+
+def test_ci_workflow_runs_the_non_live_suite_under_gvisor() -> None:
+    text = _workflow()
+    assert "runs-on: ubuntu-24.04" in text
+    assert "sudo runsc install" in text
+    assert "SWF_SANDBOX_RUNTIME=runsc" in text
+    assert "PYTHONDONTWRITEBYTECODE=1" in text
+    assert '-m "not live"' in text
+    assert "-i br-+ -j DROP" in text
+    assert "getent passwd 1000" in text
+    assert "ops/ci_check_junit.py" in text
+    assert "label=swf.test=1" in text
+    assert "timeout-minutes:" in text
+
+
+def test_ci_workflow_uses_no_secrets_and_never_pushes() -> None:
+    text = _workflow()
+    assert "secrets." not in text
+    assert "git push" not in text
+    assert "persist-credentials: false" in text
+
+
+def test_ci_workflow_triggers_only_on_dispatch_and_feature_m8() -> None:
+    text = _workflow()
+    assert "workflow_dispatch:" in text
+    assert "branches: [feature/m8]" in text
+    assert "pull_request" not in text and "schedule:" not in text
