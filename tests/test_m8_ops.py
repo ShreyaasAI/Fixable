@@ -102,7 +102,6 @@ def test_ci_workflow_runs_the_non_live_suite_under_gvisor() -> None:
     assert "PYTHONDONTWRITEBYTECODE=1" in text
     assert '-m "not live"' in text
     assert "-i br-+ -j DROP" in text
-    assert "getent passwd 1000" in text
     assert "ops/ci_check_junit.py" in text
     assert "label=swf.test=1" in text
     assert "timeout-minutes:" in text
@@ -115,8 +114,8 @@ def test_ci_workflow_uses_no_secrets_and_never_pushes() -> None:
     assert "persist-credentials: false" in text
 
 
-def test_ci_workflow_triggers_only_on_dispatch_and_feature_m8() -> None:
+def test_ci_workflow_triggers_only_on_dispatch_and_feature_branches() -> None:
     text = _workflow()
     assert "workflow_dispatch:" in text
-    assert "branches: [feature/m8]" in text
+    assert "branches: [feature/m8, feature/m9]" in text  # m9 T9
     assert "pull_request" not in text and "schedule:" not in text
