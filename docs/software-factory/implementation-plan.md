@@ -70,6 +70,7 @@ All endpoints require a Supabase JWT, except `/healthz`. Every mutating call wri
 | DELETE | `/v1/tasks/{id}` | Delete task + workspace |
 | GET | `/v1/tasks/{id}/evidence` | Evidence bundle |
 | POST | `/v1/admin/kill` | Kill switch `{user_id?}` (admin) |
+| POST | `/v1/admin/resume` | Undo a kill `{user_id?}` (admin; M8 A2) |
 
 There is no endpoint that pushes, merges, or chooses a branch name.
 
@@ -123,6 +124,7 @@ The version is pinned in `pyproject.toml`; subclass contract tests fail loudly o
 | `evidence` | `task_id`, `kind` (baseline / post / suite / harness_rerun / diff), `command`, `exit_code`, `output_ref`, `duration_ms` |
 | `audit_log` | `id`, `user_id`, `action`, `target`, `payload`, `created_at` (append-only) |
 | `quotas_usage` | `user_id`, `day`, `tasks`, `cost_usd` |
+| `system_state` | singleton: `tasks_paused`, `updated_at`, `updated_by` (backend only; M8) |
 
 **Statuses:** `created, queued, preparing, investigating, awaiting_plan_approval, executing, awaiting_command_approval, awaiting_input, verifying, confirming, opening_pr, completed, rejected, failed, interrupted, cancelled`.
 
