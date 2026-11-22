@@ -200,6 +200,7 @@ def test_runs_as_unprivileged_uid_and_can_write_workspace(sandbox: SandboxEnv) -
     out = run(sandbox, "id -u; id -g; pwd")
     assert out["returncode"] == 0, out
     uid, gid = sandbox_user().split(":")
+    assert uid != "0"
     assert out["output"].split() == [uid, gid, "/repo"]
     out = run(sandbox, "echo hello > /repo/made-in-container.txt")
     assert out["returncode"] == 0, out

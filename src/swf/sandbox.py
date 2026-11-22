@@ -28,6 +28,7 @@ escape). `_check_finished` is a no-op: only the backend `complete_task` tool end
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import os
 import re
@@ -96,7 +97,8 @@ def check_runtime(runtime: str, *, docker: str = "docker") -> None:
         raise SandboxRuntimeError(f"docker runtime {runtime!r} not available")
 
 
-_USER_RE = re.compile(r"^[1-9]\d*:[1-9]\d*$")
+_USER_PATTERN = r"^[1-9][0-9]*:[1-9][0-9]*$"  # ASCII digits only
+_USER_RE = re.compile(_USER_PATTERN)
 _HOST_IDS: tuple[int, int] | None = None
 if sys.platform != "win32":
     _HOST_IDS = (os.getuid(), os.getgid())
@@ -134,9 +136,9 @@ class SandboxSpec(BaseModel):
     memory_mb: int = Field(default=4096, gt=0, le=_LIMITS.task_memory_mb)
     cpus: float = Field(default=1.0, gt=0, le=_LIMITS.task_cpus)
     pids_limit: int = Field(default=512, gt=0)
-    user: str = Field(default_factory=sandbox_user, pattern=r"^[1-9]\d*:[1-9]\d*$")
+    user: str = Field(default_factory=sandbox_user, pattern=_USER_PATTERN)
     index_url: str | None = Field(
-        default=None, pattern=r"^http://\d{1,3}(\.\d{1,3}){3}:\d{1,5}/simple/$"
+        default=None, pattern=r"^http://[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5}/simple/$"
     )
     runtime: Runtime | None = Field(default_factory=runtime_from_env)
     command_timeout: int = 300
@@ -152,6 +154,19 @@ class SandboxSpec(BaseModel):
             raise ValueError(str(exc)) from exc
         if ref.registry not in ALLOWED_REGISTRIES:
             raise ValueError(f"registry {ref.registry} is not allowed")
+        return v
+
+    @field_validator("index_url")
+    @classmethod
+    def _index_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        host, port = v.removeprefix("http://").removesuffix("/simple/").split(":")
+        ip = ipaddress.IPv4Address(host)  # ValueError on octets > 255
+        if not ip.is_private or ip.is_loopback:
+            raise ValueError("index_url host must be a private, non-loopback IPv4 address")
+        if not 1 <= int(port) <= 65535:
+            raise ValueError("index_url port must be 1-65535")
         return v
 
     @field_validator("workspace")

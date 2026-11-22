@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import pytest
 
+import swf.sandbox
+import swf.worker
 from swf.sandbox import SandboxSpec, SandboxUserError, sandbox_run_args, sandbox_user
 from swf.settings import SettingsError
 from swf.worker import agent_overrides_from_env
@@ -119,3 +122,71 @@ def test_agent_overrides() -> None:
 def test_agent_overrides_rejects(name: str, value: str) -> None:
     with pytest.raises(SettingsError, match=name):
         agent_overrides_from_env({name: value})
+
+
+ARABIC_1000 = "1\u0660\u0660\u0660"  # "1" + three ARABIC-INDIC DIGIT ZERO
+
+
+@pytest.mark.parametrize("raw", [f"{ARABIC_1000}:{ARABIC_1000}", "+1000:1000", "1_000:1000"])
+def test_env_override_ascii_digits_only(raw: str) -> None:
+    with pytest.raises(ValueError, match="SWF_SANDBOX_USER"):
+        sandbox_user({"SWF_SANDBOX_USER": raw}, host_ids=None)
+
+
+@pytest.mark.parametrize("user", ["0:0", "0:1000", "1000:0", f"{ARABIC_1000}:{ARABIC_1000}"])
+def test_spec_rejects_bad_user(tmp_path: Path, user: str) -> None:
+    with pytest.raises(ValueError):
+        _spec(tmp_path, user=user)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://8.8.8.8:3141/simple/",
+        "http://10.0.0.3:99999/simple/",
+        "http://10.0.0.3:0/simple/",
+        "http://10.0.0.300:3141/simple/",
+        "http://127.0.0.1:3141/simple/",
+        "http://\u0661\u0660.0.0.3:3141/simple/",
+        "http://10.0.0.3:\u0663\u0661\u0664\u0661/simple/",
+    ],
+)
+def test_index_url_must_be_private_ip_and_valid_port(tmp_path: Path, url: str) -> None:
+    with pytest.raises(ValueError):
+        _spec(tmp_path, index_url=url)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://172.18.0.5:3141/simple/", "http://192.168.1.2:65535/simple/"]
+)
+def test_index_url_private_ok(tmp_path: Path, url: str) -> None:
+    assert _spec(tmp_path, index_url=url).index_url == url
+
+
+@pytest.mark.parametrize("value", ["+80", "1_000", "\u0668\u0660"])
+def test_agent_overrides_ascii_digits_only(value: str) -> None:
+    with pytest.raises(SettingsError, match="SWF_AGENT_STEP_LIMIT"):
+        agent_overrides_from_env({"SWF_AGENT_STEP_LIMIT": value})
+
+
+def test_main_refuses_root_before_any_docker_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "MSWEA_GLOBAL_CONFIG_DIR",
+        "MSWEA_SILENT_STARTUP",
+        "MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT",
+        "LITELLM_MODE",
+    ):
+        monkeypatch.setenv(name, "")  # main() -> _mswea.isolate() mutates these; restore after
+    monkeypatch.delenv("SWF_SANDBOX_USER", raising=False)
+    monkeypatch.setenv("SWF_SANDBOX_RUNTIME", "runsc")
+
+    def forbidden(*_: object, **__: object) -> None:
+        raise AssertionError("Docker work before the root check")
+
+    monkeypatch.setattr(swf.sandbox, "check_runtime", forbidden)
+    monkeypatch.setattr(swf.sandbox, "runtime_from_env", forbidden)
+    monkeypatch.setattr("swf.egress.ensure_egress", forbidden)
+    root = functools.partial(swf.sandbox.sandbox_user, host_ids=(0, 0))
+    monkeypatch.setattr(swf.sandbox, "sandbox_user", root)
+    with pytest.raises(SandboxUserError, match="SWF_SANDBOX_USER"):
+        swf.worker.main()

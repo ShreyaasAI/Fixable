@@ -814,13 +814,9 @@ def agent_overrides_from_env(env: Mapping[str, str] | None = None) -> dict[str, 
         raw = env.get(name, "").strip()
         if not raw:
             continue
-        try:
-            value = int(raw)
-        except ValueError:
-            value = 0
-        if value <= 0:
+        if not (raw.isascii() and raw.isdigit()) or int(raw) <= 0:
             raise SettingsError(f"{name} must be a positive integer")
-        out[key] = value
+        out[key] = int(raw)
     return out
 
 
@@ -844,6 +840,8 @@ def main() -> None:
     from swf.settings import Settings
     from swf.tokens import TokenCipher
 
+    sandbox_user()  # m9 §0.7: fail fast on a root host, before any Docker work
+    agent = agent_overrides_from_env()
     settings = Settings.from_env()
     Guardrails.from_env()  # fail fast: MissingApiKey exits before any task is claimed
     abuse = AbuseLimits.from_env()
@@ -853,8 +851,6 @@ def main() -> None:
     logger.info("sandbox runtime: %s", runtime or "docker default")
     source = os.environ.get("SWF_LOCAL_SOURCE")
     workspaces_root = Path(os.environ.get("SWF_WORKSPACES_ROOT") or "./workspaces").resolve()
-    sandbox_user()  # m9 §0.7: fail fast on a root host without SWF_SANDBOX_USER
-    agent = agent_overrides_from_env()
     egress = EgressConfig()
     ensure_egress(egress)
     config = WorkerConfig(

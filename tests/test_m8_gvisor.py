@@ -67,7 +67,9 @@ def test_sandbox_runs_under_runsc(
         )
         assert inspected.stdout.strip() == "runsc"
         assert "gVisor" in env.execute({"command": "dmesg"})["output"]
-        assert env.execute({"command": "id -u"})["output"].strip() == sandbox_user().split(":")[0]
+        uid = sandbox_user().split(":")[0]
+        assert uid != "0"
+        assert env.execute({"command": "id -u"})["output"].strip() == uid
     finally:
         env.cleanup()
 
