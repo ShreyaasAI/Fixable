@@ -365,3 +365,104 @@ def test_pkgcache_imports_stdlib_only() -> None:
             top = m.split(".")[0]
             assert top != "swf", m
             assert top in sys.stdlib_module_names, m
+
+
+# 8 (review fixes)
+
+
+def test_handler_timeout_and_close() -> None:
+    handler = pkgcache.make_handler(pkgcache.Store.__new__(pkgcache.Store), FakeFetcher({}))
+    assert handler.timeout == 30
+    assert handler.close_connection is True
+
+
+def test_malformed_request_line_not_echoed(tmp_path: Path) -> None:
+    import socket
+
+    handler = pkgcache.make_handler(pkgcache.Store(tmp_path), FakeFetcher({}))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        with socket.create_connection(server.server_address[:2], timeout=10) as s:
+            s.sendall(b"GET /x HTTP/9.MARKER123<script>" + b"\r\n" * 2)
+            data = b""
+            while chunk := s.recv(65536):
+                data += chunk
+    finally:
+        server.shutdown()
+        server.server_close()
+        t.join(timeout=5)
+    assert data.startswith(b"HTTP/1.0 400"), data
+    assert b"MARKER123" not in data, data
+    assert b"script" not in data, data
+
+
+def test_log_line_quotes_command(served, capsys: pytest.CaptureFixture[str]) -> None:
+    req, _ = served
+    req("GET", "/admin")
+    assert "'GET' '/admin' 404" in capsys.readouterr().err
+
+
+def test_evict_failure_still_stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = pkgcache.Store(tmp_path)
+
+    def boom(keep: Path) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(store, "_evict", boom)
+    data = b"z" * 10
+    path = _path()
+    out = store.put_file(path, [data], hashlib.sha256(data).hexdigest())
+    assert store.get_file(path) == out
+    assert out.read_bytes() == data
+
+
+def test_backward_clock_is_stale(tmp_path: Path) -> None:
+    c = Clock(1000.0)
+    store = pkgcache.Store(tmp_path, clock=c)
+    store.put_index("pytest", "<html/>", {_path(): "a" * 64})
+    c.now = 900.0
+    assert store.get_index("pytest") is None
+    assert store.expected_sha(_path()) is None
+
+
+def test_handler_head_file_has_empty_body(served) -> None:
+    req, _ = served
+    req("GET", "/simple/pytest/")
+    status, headers, body = req("HEAD", f"/files/{WHEEL_PATH}")
+    assert status == 200
+    assert headers["content-type"] == "application/octet-stream"
+    assert headers["content-length"] == str(len(WHEEL))
+    assert body == b""
+
+
+def test_urllib_fetcher_refuses_other_urls() -> None:
+    f = pkgcache.UrllibFetcher()
+    for url in ("https://evil.example.com/simple/x/", "http://pypi.org/simple/x/", "file:///etc"):
+        with pytest.raises(OSError):
+            f.get(url)
+
+
+def test_redirect_handler_refuses_off_host_and_non_https() -> None:
+    import urllib.error
+    import urllib.request
+
+    h = pkgcache._SameHostRedirect()
+    r = urllib.request.Request(BASE + WHEEL_PATH)
+    for new in (
+        "https://evil.example.com/packages/x",
+        "http://files.pythonhosted.org/packages/x",
+    ):
+        with pytest.raises(urllib.error.HTTPError):
+            h.redirect_request(r, None, 302, "Found", {}, new)  # type: ignore[arg-type]
+    ok = h.redirect_request(r, None, 302, "Found", {}, BASE + "aa/x")  # type: ignore[arg-type]
+    assert ok is not None and ok.full_url == BASE + "aa/x"
+
+
+def test_sweep_removes_temp_files(tmp_path: Path) -> None:
+    store = pkgcache.Store(tmp_path)
+    tmp = tmp_path / "files" / ".tmp-leftover"
+    tmp.write_bytes(b"partial")
+    assert store.sweep() == 1
+    assert not tmp.exists()

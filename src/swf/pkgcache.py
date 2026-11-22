@@ -124,9 +124,10 @@ class Store:
 
     def _fresh(self, p: Path) -> bool:
         try:
-            return self.clock() - p.stat().st_mtime <= self.ttl
+            age = self.clock() - p.stat().st_mtime
         except OSError:
             return False
+        return 0 <= age <= self.ttl  # a future mtime (clock went back) counts as stale
 
     def _write(self, final: Path, data: bytes) -> None:
         fd, tmp = tempfile.mkstemp(prefix=_TMP_PREFIX, dir=final.parent)
@@ -203,7 +204,10 @@ class Store:
             os.utime(tmp, (now, now))
             with self._lock:
                 os.replace(tmp, final)
-                self._evict(keep=final)
+                try:
+                    self._evict(keep=final)
+                except OSError as e:  # the stored file stays valid; the cap is retried next store
+                    sys.stderr.write(f"pkgcache: eviction failed: {type(e).__name__}\n")
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise
@@ -283,7 +287,9 @@ class UrllibFetcher:
         headers = {"User-Agent": "swf-pkgcache"}
         if url.startswith(UPSTREAM_INDEX):
             headers["Accept"] = "text/html"
-        req = urllib.request.Request(url, headers=headers, method="GET")
+        return self._stream(urllib.request.Request(url, headers=headers, method="GET"))
+
+    def _stream(self, req: urllib.request.Request) -> Iterator[bytes]:
         try:
             with self._opener.open(req, timeout=self.timeout) as resp:
                 while chunk := resp.read(CHUNK):
@@ -305,13 +311,21 @@ def make_handler(store: Store, fetcher: Fetcher) -> type[http.server.BaseHTTPReq
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "swf-pkgcache"
         sys_version = ""
+        timeout = 30
+        close_connection = True
+
+        def send_error(
+            self, code: int, message: str | None = None, explain: str | None = None
+        ) -> None:
+            self.close_connection = True
+            self._plain(code)  # fixed body: the request line is never echoed
 
         def log_message(self, format: str, *args: Any) -> None:
             pass  # one line per request comes from _log; headers are never logged
 
         def _log(self, status: int, cache: str) -> None:
-            path = urllib.parse.urlsplit(self.path).path[:300]
-            sys.stderr.write(f"{self.command} {path!r} {status} {cache}\n")
+            path = urllib.parse.urlsplit(getattr(self, "path", "")).path[:300]
+            sys.stderr.write(f"{self.command!r} {path!r} {status} {cache}\n")
             sys.stderr.flush()
 
         def _plain(

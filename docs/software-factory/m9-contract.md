@@ -748,4 +748,6 @@ To be filled in T12: run id, controls, summary table (copied from m9-results.md)
 
 ## 13. Amendments
 
-None yet. Amendments from the user override §0–§6.
+Amendments from the user override §0–§6.
+
+- **A1 [A, T4 review, 2026-11-22] Index size cap.** §1.3 adds `MAX_INDEX_BYTES = 32 * 1024 * 1024`: an upstream index page over 32 MiB → 502, nothing stored. The page is buffered in memory before `rebuild_index`, so 3–4 concurrent cold misses on very large pages could approach the `--memory 256m` limit in §0.6. Suggestion for T5/T6 (needs approval, not applied): raise the cache container to `--memory 512m`.
