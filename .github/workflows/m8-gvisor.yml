@@ -21,8 +21,6 @@ jobs:
     if: github.repository == 'ShreyaasAI/swf-ci'  # never on Fixable (no push before M9)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    env:
-      SWF_PKGCACHE_DIR: ${{ runner.temp }}/pkgcache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,6 +59,8 @@ jobs:
           echo "JUNIT=$RUNNER_TEMP/m8-ci-junit.xml" >> "$GITHUB_ENV"
           echo "UV_BIN=$(command -v uv)" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/pkgcache"
+          # `runner` context is not allowed in job-level env; set it here.
+          echo "SWF_PKGCACHE_DIR=$RUNNER_TEMP/pkgcache" >> "$GITHUB_ENV"
           echo "runner: $(id)"
 
       # test_m8_host_isolation's gateway:22 case only means something if the host listens on 22.

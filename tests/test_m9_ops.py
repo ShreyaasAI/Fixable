@@ -34,7 +34,10 @@ def test_ci_runs_pytest_as_the_runner_user_not_uid_1000() -> None:
 
 
 def test_ci_sets_pkgcache_dir_under_runner_temp() -> None:
-    assert "SWF_PKGCACHE_DIR: ${{ runner.temp }}/pkgcache" in _workflow()
+    wf = _workflow()
+    assert 'echo "SWF_PKGCACHE_DIR=$RUNNER_TEMP/pkgcache" >> "$GITHUB_ENV"' in wf
+    # GitHub rejects the `runner` context in job-level env (workflow file error).
+    assert "${{ runner." not in wf
 
 
 def test_ci_keeps_the_guard_and_the_offline_suite() -> None:
