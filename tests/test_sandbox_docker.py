@@ -31,7 +31,13 @@ from swf.egress import (
     render_squid_conf,
     teardown_egress,
 )
-from swf.sandbox import SandboxEnv, SandboxSpec, cleanup_orphans, runtime_from_env
+from swf.sandbox import (
+    SandboxEnv,
+    SandboxSpec,
+    cleanup_orphans,
+    runtime_from_env,
+    sandbox_user,
+)
 
 pytestmark = pytest.mark.docker
 
@@ -183,7 +189,7 @@ def test_container_is_hardened(sandboxes: MakeSandbox, plain_network: str) -> No
     assert host["Dns"] == ["127.0.0.1"]
     assert not host.get("PortBindings")
     assert not host.get("Binds")
-    assert info["Config"]["User"] == "1000:1000"
+    assert info["Config"]["User"] == sandbox_user()
     assert info["Config"]["Labels"]["swf.managed"] == "1"
     assert info["Config"]["Labels"]["swf.task"] == env.spec.task_id
     mounts = [(m["Type"], m["Destination"], m["RW"]) for m in info["Mounts"]]
@@ -193,7 +199,8 @@ def test_container_is_hardened(sandboxes: MakeSandbox, plain_network: str) -> No
 def test_runs_as_unprivileged_uid_and_can_write_workspace(sandbox: SandboxEnv) -> None:
     out = run(sandbox, "id -u; id -g; pwd")
     assert out["returncode"] == 0, out
-    assert out["output"].split() == ["1000", "1000", "/repo"]
+    uid, gid = sandbox_user().split(":")
+    assert out["output"].split() == [uid, gid, "/repo"]
     out = run(sandbox, "echo hello > /repo/made-in-container.txt")
     assert out["returncode"] == 0, out
     written = sandbox.spec.workspace / "made-in-container.txt"

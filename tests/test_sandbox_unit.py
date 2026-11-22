@@ -29,6 +29,12 @@ def _no_env_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SWF_SANDBOX_RUNTIME", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _pinned_sandbox_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default user is the host uid:gid on POSIX; pin it so the literal checks hold on CI."""
+    monkeypatch.setenv("SWF_SANDBOX_USER", "1000:1000")
+
+
 def spec_for(ws: Path, **overrides: Any) -> SandboxSpec:
     fields: dict[str, Any] = {
         "task_id": "task-1",
