@@ -134,22 +134,27 @@ def _plan(**over: Any) -> dict[str, Any]:
     plan: dict[str, Any] = {
         "summary": "s",
         "root_cause": "r",
-        "steps": ["edit pager.py"],
+        "steps": "edit pager.py",
         "files": ["pager.py"],
         "test_plan": "t",
     }
     return plan | over
 
 
-@pytest.mark.parametrize("field", ["steps", "files"])
-def test_a_secret_inside_a_list_argument_flags_the_call(field: str) -> None:
-    verdict = guard.check("submit_plan", _plan(**{field: ["ok", f"use {GITHUB_TOKEN}"]}))
+def test_a_secret_inside_a_list_argument_flags_the_call() -> None:
+    verdict = guard.check("submit_plan", _plan(files=["ok", f"use {GITHUB_TOKEN}"]))
+    assert verdict.decision == "flag"
+    assert [f.detector for f in verdict.findings] == ["github_token"]
+
+
+def test_a_secret_inside_the_steps_string_flags_the_call() -> None:
+    verdict = guard.check("submit_plan", _plan(steps=f"ok\nuse {GITHUB_TOKEN}"))
     assert verdict.decision == "flag"
     assert [f.detector for f in verdict.findings] == ["github_token"]
 
 
 def test_a_nul_inside_a_list_argument_is_malformed() -> None:
-    verdict = guard.check("submit_plan", _plan(steps=["a\x00b"]))
+    verdict = guard.check("submit_plan", _plan(files=["a\x00b"]))
     assert verdict.decision == "malformed"
     assert verdict.errors == ("NUL character in arguments",)
 

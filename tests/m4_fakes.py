@@ -413,7 +413,7 @@ class FakeChannel:
 PLAN_ARGS: dict[str, Any] = {
     "summary": "Page 2 repeats the last item of page 1.",
     "root_cause": "start offset subtracts one for pages after the first",
-    "steps": ["remove the - 1 from the start offset"],
+    "steps": "remove the - 1 from the start offset",
     "files": ["pager.py"],
     "test_plan": "run the failing test, then the whole suite",
 }

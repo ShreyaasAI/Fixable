@@ -55,7 +55,7 @@ M3_TABLE: dict[str, list[str]] = {
 PLAN: dict[str, Any] = {
     "summary": "s",
     "root_cause": "r",
-    "steps": ["one"],
+    "steps": "one",
     "files": ["a.py"],
     "test_plan": "t",
 }
@@ -157,8 +157,8 @@ INVALID_ARGS: list[tuple[str, dict[str, Any]]] = [
     ("run_tests", {"selector": "$(id)"}),
     ("run_tests", {"selector": "x" * 301}),
     ("run_tests", {"extra": 1}),
-    ("submit_plan", {**PLAN, "steps": []}),
-    ("submit_plan", {**PLAN, "steps": ["s"] * 21}),
+    ("submit_plan", {**PLAN, "steps": ""}),
+    ("submit_plan", {**PLAN, "steps": ["one"]}),
     ("submit_plan", {**PLAN, "files": ["f"] * 51}),
     ("submit_plan", {**PLAN, "summary": ""}),
     ("submit_plan", {**PLAN, "summary": "x" * 2001}),
@@ -194,8 +194,8 @@ def test_plan_accepts_the_contract_fields() -> None:
 @pytest.mark.parametrize(
     "bad",
     [
-        {"steps": []},
-        {"steps": ["s"] * 21},
+        {"steps": ""},
+        {"steps": "\n".join(["s"] * 21)},
         {"files": ["f"] * 51},
         {"summary": ""},
         {"root_cause": "x" * 2001},

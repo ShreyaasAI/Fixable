@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development. Tasks run in order, one implementer each, and each is followed by a spec review and a code-quality review. Steps use checkboxes (`- [ ]`).
 
 - **Purpose:** The interface contract and ordered task list for M9. If something here is wrong, report it. Do not silently diverge.
-- **Last updated:** 2026-11-22
+- **Last updated:** 2026-11-23
 - **Status:** Draft v2: user answers Q1–Q4 and review fixes applied (2026-11-22); awaiting user approval to build. Branch `feature/m9` (worktree `.claude/worktrees/m9-plan`), on top of `4f982a4` (M8 merged).
 - **Sources:** plan §5, §7, §13, §14, §16, §18 M9; spec §4 items 12–13, §8 (package cache row), §10 (criteria), §12 Q1 and Q3; research plan §6 item 9, §7.2, §8, RQ3, RQ9; m2 §0.2, §4, A6; m6 §0; m7 §13; m8 §0.15, §5, §6, §13 A5.
 - **Roles [D, user]:** Opus = planner, coder, reviewer. Sonnet = bash/ops, docs, test writer. Haiku = tester (runs suites, reports counts and failures, edits nothing). $0 infrastructure only.
@@ -751,3 +751,4 @@ To be filled in T12: run id, controls, summary table (copied from m9-results.md)
 Amendments from the user override §0–§6.
 
 - **A1 [A, T4 review, 2026-11-22] Index size cap.** §1.3 adds `MAX_INDEX_BYTES = 32 * 1024 * 1024`: an upstream index page over 32 MiB → 502, nothing stored. The page is buffered in memory before `rebuild_index`, so 3–4 concurrent cold misses on very large pages could approach the `--memory 256m` limit in §0.6. Suggestion for T5/T6 (needs approval, not applied): raise the cache container to `--memory 512m`.
+- **A2 [A, T11 live run, 2026-11-23] `submit_plan.steps` is a string on the wire.** The first live run (`run-20261123a`, aborted after 2 tasks, 0 PRs) failed every task with `repeated_format_error`: glm-4.7-flash writes an array-of-strings argument as a bare numbered list (`"steps":1. Edit … 2. Run …,`), which is invalid JSON (offline probe: 5/5 on the task-2 history). With `steps` typed as a string it emits valid JSON 5/5. Fix: the `submit_plan` schema types `steps` as a string (1..4000 chars, "one per line"); `Plan` splits it into lines (stripped, blanks dropped, 1..20), so the approval payload and UI still get a list. `files` (short paths) parsed fine and stays an array. The run restarts from a fresh `--out`.
