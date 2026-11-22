@@ -714,7 +714,7 @@ ssh <user>@<vm> 'cd ~/swf && bash ops/vm-test.sh tests/test_m8_kill_docker.py te
   - First run (44985961092): 1774 passed, 10 skipped (1 inverse runsc-missing test, 9 supabase without a URL), 0 failed, 7m43s.
   - Host isolation before the firewall rule: 2 failed (red). After the rule: green. The gate was then fixed to allow the inverse skip.
   - CI rerun 44986707889: 1773 passed, 1 failed (`test_pids_limit_caps_process_count`: under runsc the host pids cgroup also counts Sentry threads, so hitting the cap ended the sandbox, `WaitPID ... EOF`; fails closed). Test now accepts that outcome under runsc. Risk for M9: a fork-heavy repo can crash its gVisor sandbox instead of getting EAGAIN.
-  - CI run 3: <pending>
+  - CI run 3 44987517565 (edbf31a): 1774 passed, 10 skipped, 0 failed (6m47s); gate green (2/3 gvisor ran, 1 inverse skip); host isolation red before the rule (2 failed), green after; no leftovers.
 - **Supabase (T6b).** Free project "Fixable", ref `yztwunzllretrgsrauuf`. 5 migrations applied via MCP. Advisor: only INFO `rls_enabled_no_policy` on `github_tokens` and `system_state` (intended). `tests/test_m8_supabase.py`: 9 passed in 21.19s.
 - **Risks carried:** guard latency (M7); `docker rm` hang may delay serial kills; 2 s test timeouts may flake on slow hosts; persisted iptables rules untested across reboot; Arm untested; `ops/vm-*.sh` kept for a future Linux host, untested on a real VM.
 - **Open for M9:** host choice (must be $0, no credit card); quota numbers; Node 20 action deprecation warning (bump actions later).

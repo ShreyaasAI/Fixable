@@ -276,7 +276,7 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 ### M8 — Abuse controls + gVisor
 - [x] Tests: over-quota refused pre-start; 429 rate limiting; kill switch stops tasks ≤ 30 s; sandbox suite passes under `runsc`
 - **DoD:** tests green on the Oracle VM. **Changed [D, 2026-11-22, user]:** the Oracle VM needs a credit card, so the DoD ran on GitHub Actions (private repo `ShreyaasAI/swf-ci`, x86_64, runsc). Arm is untested.
-- **Result (2026-11-22, awaiting review):** CI run 44985961092: 1774 passed, 10 skipped, 0 failed (7m43s). Host isolation red before the firewall rule, green after. CI rerun: <pending>. Kill measured 2.3 s / 1.9 s locally (limit 30 s). Supabase Free project "Fixable" (`yztwunzllretrgsrauuf`): 5 migrations applied, 9 Supabase tests passed. Quota values remain the spec defaults [Q]. Adds `POST /v1/admin/resume`, table `system_state`, setting `SWF_SANDBOX_RUNTIME`. Carried risks and amendments: `m8-contract.md` §5, §13.
+- **Result (2026-11-22, awaiting review):** CI run 44985961092: 1774 passed, 10 skipped, 0 failed (7m43s). Host isolation red before the firewall rule, green after. CI run 3 44987517565 green: 1774 passed, 0 failed (after a gVisor pids-limit test fix, `m8-contract.md` §5). Local: 1778 passed, 0 failed. Kill measured 2.3 s / 1.9 s locally (limit 30 s). Supabase Free project "Fixable" (`yztwunzllretrgsrauuf`): 5 migrations applied, 9 Supabase tests passed. Quota values remain the spec defaults [Q]. Adds `POST /v1/admin/resume`, table `system_state`, setting `SWF_SANDBOX_RUNTIME`. Carried risks and amendments: `m8-contract.md` §5, §13.
 
 ### M9 — Concurrency + evaluation (Oracle VM)
 - [ ] 10 seeded repos through the full pipeline; 2 concurrent tasks
