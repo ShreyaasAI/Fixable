@@ -38,12 +38,12 @@ Settled 2026-11-22 (m9-contract §0.23–§0.26):
 - Paid tasks ("2 free/day, then $1 per task") = real payments: deferred to a new post-M10 milestone (spec §5 lists billing as a non-goal; spec update needed then). M9 keeps spec-default quotas.
 - M9 eval host: local PC (Docker Desktop, runc); gVisor already proven on CI (M8 A5). Live LLM + real PRs to `swf-pr-sandbox` approved.
 
-Open risks: Portkey saved guardrails are off (`SWF_PORTKEY_CONFIG` unset; opt-in per m7 §13 A1), so screening relies on the in-process guard only (M10 decision); provider HTTP 429 under concurrency (M9: 1 of 10 concurrent tasks failed `retries_exhausted`; 21 model-step retries vs 0 single; needs backoff or provider capacity before a public deploy); M7 guard latency (p95 50 s per judged text; cold-start guard 170-254 s on the first two single tasks); gVisor pids-limit can end the sandbox (m8 §5); cache memory kept at 256m (lead's call; m9 §13 A1); runsc and arm64 untested on the eval host; `swf_eval report` to stdout fails on a cp1252 Windows console (use `--write`).
+Open risks: Portkey saved guardrails are off (`SWF_PORTKEY_CONFIG` unset; opt-in per m7 §13 A1), so screening relies on the in-process guard only (user 2026-11-23: turn on by default in M10); provider HTTP 429 under concurrency (M9: 1 of 10 concurrent tasks failed `retries_exhausted`; 21 model-step retries vs 0 single; needs backoff or provider capacity before a public deploy); M7 guard latency (p95 50 s per judged text; cold-start guard 170-254 s on the first two single tasks); gVisor pids-limit can end the sandbox (m8 §5); cache memory kept at 256m (lead's call; m9 §13 A1); runsc and arm64 untested on the eval host; `swf_eval report` to stdout fails on a cp1252 Windows console (use `--write`).
 
 ## Next action
 
 M9 approved (user, 2026-11-23), merged to `main` (`955818b`), pushed to `ShreyaasAI/Fixable`; seed branches deleted.
-- Next: M10 (public deploy, minimal web UI, deferred items per m9-contract §6: public link, paid tasks post-M10, product default model, gVisor/Arm host decision, Supabase keep-alive, guard latency budget). Before a public deploy, handle provider 429 under concurrency.
+- Next: M10 (public deploy, minimal web UI, deferred items per m9-contract §6: public link, paid tasks post-M10, product default model, gVisor/Arm host decision, Supabase keep-alive, guard latency budget; Portkey saved guardrails on by default [D, user, 2026-11-23]). Before a public deploy, handle provider 429 under concurrency.
 
 ## Reading guide
 

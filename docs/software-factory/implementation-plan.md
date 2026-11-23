@@ -288,6 +288,7 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 ### M10 — Minimal web UI
 - [ ] Every spec §3 action works in the browser (manual checklist + screenshots)
 - **DoD:** checklist complete.
+- **Added [D, user, 2026-11-23]:** turn Portkey saved guardrails on by default (`SWF_PORTKEY_CONFIG`, with production output checks such as a secret regex), in addition to the in-process guard (m7 §12, m9-results notes).
 
 ## 19. Open questions [Q]
 
