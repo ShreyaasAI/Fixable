@@ -480,12 +480,12 @@ def test_a_plan_request_carries_the_plan(make_agent: MakeAgent) -> None:
     ((kind, payload),) = [v for v in channel.approvals.values() if v[0] == "plan"]
     assert kind == "plan"
     assert payload["summary"] == PLAN_ARGS["summary"]
-    assert payload["steps"] == PLAN_ARGS["steps"]
+    assert payload["steps"] == [PLAN_ARGS["steps"]]
     assert payload["files"] == PLAN_ARGS["files"]
 
 
 def test_an_invalid_plan_is_an_observation_not_an_approval(make_agent: MakeAgent) -> None:
-    bad = {**PLAN_ARGS, "steps": []}
+    bad = {**PLAN_ARGS, "steps": ""}
     steps = [[call("submit_plan", "bad-plan", **bad)], *happy_steps()]
     agent, _, _, channel = make_agent(steps)
     result = run_agent(agent)

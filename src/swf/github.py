@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -19,6 +20,7 @@ import httpx
 
 USER_AGENT = "swf-agent"
 MAX_FILE_BYTES = 1024 * 1024
+_DELETABLE_BRANCH_RE = re.compile(r"^(?:agent/[0-9a-f-]{36}|seed/[0-9a-z-]{1,64})$", re.ASCII)
 
 
 class GitHubError(Exception):
@@ -215,6 +217,37 @@ class GitHubClient:
         if not html_url.startswith(self._html_base):
             raise GitHubError("pull request html_url is not on the expected host")
         return PullRequest(number=int(data["number"]), html_url=html_url)
+
+    # --- M9 eval cleanup (m9-contract §1.5): close, never merge ------------------------------
+
+    def _get_pull(self, token: str, full_name: str, number: int) -> dict[str, Any]:
+        with self._client(token) as client:
+            resp = client.get(f"/repos/{quote(full_name, safe='/')}/pulls/{int(number)}")
+        if resp.status_code == 404:
+            raise GitHubNotFound(f"pull request {number} not found")
+        self._check(resp)
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise GitHubError("unexpected pull request payload")
+        return data
+
+    def close_pull(self, token: str, full_name: str, number: int) -> None:
+        with self._client(token) as client:
+            resp = client.patch(
+                f"/repos/{quote(full_name, safe='/')}/pulls/{int(number)}",
+                json={"state": "closed"},
+            )
+        self._check(resp)
+
+    def delete_branch(self, token: str, full_name: str, branch: str) -> None:
+        """Only `agent/<task-id>` or `seed/<name>` refs; anything else is refused unsent."""
+        if not isinstance(branch, str) or not _DELETABLE_BRANCH_RE.fullmatch(branch):
+            raise ValueError(f"refusing to delete branch {branch!r}")
+        with self._client(token) as client:
+            resp = client.delete(
+                f"/repos/{quote(full_name, safe='/')}/git/refs/heads/{quote(branch, safe='/')}"
+            )
+        self._check(resp)
 
 
 def _repo(item: dict[str, Any]) -> Repo:

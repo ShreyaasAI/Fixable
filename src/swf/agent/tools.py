@@ -14,7 +14,7 @@ import re
 import shlex
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from swf import policy
 
@@ -131,13 +131,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "summary": _str("What you will change.", minLength=1, maxLength=2000),
             "root_cause": _str("Why the test fails.", minLength=1, maxLength=2000),
-            "steps": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 1,
-                "maxItems": 20,
-                "description": "Ordered steps.",
-            },
+            # A string, not an array: glm-4.7-flash writes string arrays as bare text (m9 §13 A2).
+            "steps": _str("Ordered steps, one per line.", minLength=1, maxLength=4000),
             "files": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -193,6 +188,14 @@ class Plan(BaseModel):
     steps: list[str] = Field(min_length=1, max_length=20)
     files: list[str] = Field(default_factory=list, max_length=50)
     test_plan: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _split_steps(cls, value: Any) -> Any:
+        """The wire form is one step per line; blank lines are dropped."""
+        if isinstance(value, str):
+            return [line.strip() for line in value.splitlines() if line.strip()]
+        return value
 
 
 # --- argument validation (the subset of JSON Schema the schemas above use) ------------------

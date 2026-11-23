@@ -33,7 +33,7 @@ import socket
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -77,7 +77,7 @@ from swf.pr import (
     render_pr_body,
 )
 from swf.preflight import Limits
-from swf.settings import AbuseLimits
+from swf.settings import AbuseLimits, SettingsError
 
 logger = logging.getLogger("swf.worker")
 
@@ -800,6 +800,26 @@ class Worker:
 # --- entry point ---------------------------------------------------------------------------
 
 
+_AGENT_ENV = {
+    "SWF_AGENT_STEP_LIMIT": "step_limit",
+    "SWF_AGENT_WALL_TIME_SECONDS": "wall_time_limit_seconds",
+}
+
+
+def agent_overrides_from_env(env: Mapping[str, str] | None = None) -> dict[str, int]:
+    """Agent limit overrides from env (m9 §1.2); blank or missing keeps the product default."""
+    env = os.environ if env is None else env
+    out: dict[str, int] = {}
+    for name, key in _AGENT_ENV.items():
+        raw = env.get(name, "").strip()
+        if not raw:
+            continue
+        if not (raw.isascii() and raw.isdigit()) or int(raw) <= 0:
+            raise SettingsError(f"{name} must be a positive integer")
+        out[key] = int(raw)
+    return out
+
+
 def main() -> None:
     config_dir = _mswea.isolate()
     assert os.environ["MSWEA_GLOBAL_CONFIG_DIR"] == str(config_dir)
@@ -810,10 +830,18 @@ def main() -> None:
     from swf.github import GitHubClient
     from swf.gitops import GitOps
     from swf.pr import GitHubPublisher, GitHubWorkspace, db_token_source
-    from swf.sandbox import check_runtime, cleanup_orphans, open_task_sandbox, runtime_from_env
+    from swf.sandbox import (
+        check_runtime,
+        cleanup_orphans,
+        open_task_sandbox,
+        runtime_from_env,
+        sandbox_user,
+    )
     from swf.settings import Settings
     from swf.tokens import TokenCipher
 
+    sandbox_user()  # m9 §0.7: fail fast on a root host, before any Docker work
+    agent = agent_overrides_from_env()
     settings = Settings.from_env()
     Guardrails.from_env()  # fail fast: MissingApiKey exits before any task is claimed
     abuse = AbuseLimits.from_env()
@@ -826,7 +854,7 @@ def main() -> None:
     egress = EgressConfig()
     ensure_egress(egress)
     config = WorkerConfig(
-        worker_id=default_worker_id(), workspaces_root=workspaces_root, abuse=abuse
+        worker_id=default_worker_id(), workspaces_root=workspaces_root, abuse=abuse, agent=agent
     )
     db = Database(settings.database_url, max_size=config.max_concurrent * 2 + 2)
     db.open()

@@ -1,7 +1,7 @@
 # Handover
 
 - **Purpose:** Bring a new session from zero to the next action. This file is the project's state, not its content; details live in the artifacts it points to.
-- **Last updated:** 2026-11-22
+- **Last updated:** 2026-11-23
 - **Status:** Current
 
 ## Where the project is
@@ -19,25 +19,33 @@
 | M5 evidence, harness re-run, read-only backstop | **Approved, merged to `main`** (`1235cdc`). Contract `docs/software-factory/m5-contract.md` (§12 amendments override §0–§8) |
 | M6 GitHub clone, clean-clone apply, PR | **Approved, merged to `main`** (`1235cdc`). Live PR: https://github.com/ShreyaasAI/swf-pr-sandbox/pull/1. Contract `docs/software-factory/m6-contract.md` |
 | M7 guardrails (input judge + regex, output guard, Portkey opt-in) | **Approved (user, 2026-11-21), merged to `main`**. Contract `docs/software-factory/m7-contract.md` (§13 A1–A5 override §0–§12). Results: implementation-plan §18 M7 |
-| M8 abuse controls + gVisor | **Done, awaiting user approval and merge** (branch `feature/m8`). Contract `docs/software-factory/m8-contract.md` (§13 A1–A5 override §0–§6; §5 results). gVisor DoD ran on GitHub Actions, not Oracle (needs a card) |
-| M9–M10 | Not started |
+| M8 abuse controls + gVisor | **Approved, merged to `main`** (`4f982a4`, 2026-11-22). Contract `docs/software-factory/m8-contract.md` (§13 A1–A5 override §0–§6; §5 results). gVisor DoD ran on GitHub Actions, not Oracle (needs a card) |
+| M9 concurrency + evaluation | **Done, awaiting final user approval** on `feature/m9` (worktree `.claude/worktrees/m9-plan`). Contract `docs/software-factory/m9-contract.md` (§5 results, §13 A1–A2). Live run `run-20261123b`: single 10/10, concurrent 9/10 (drop 10 points, met), wall ratio 1.26 vs <= 1.25 (**not met**, miss accepted by the user 2026-11-23: "Accept, close M9"). Results: `docs/software-factory/m9-results.md` |
+| M10 | Not started |
 
-Repo state: `main` contains M0–M7; M8 is on `feature/m8`. **Do not push to `ShreyaasAI/Fixable` until M9 is complete** (user). `ShreyaasAI/swf-ci` is the private CI-only repo. Work in a worktree, not on `main`. Main checkout's `.env` is untracked: never `git add -A` on `main`. Docker Desktop is running on the dev machine (x86_64).
+Repo state: `main` contains M0–M8; M9 is on `feature/m9` (not yet merged). **Do not push to `ShreyaasAI/Fixable` until M9 is approved** (user). `ShreyaasAI/swf-ci` is the private CI-only repo. Work in a worktree, not on `main`. Main checkout's `.env` is untracked: never `git add -A` on `main`. Docker Desktop is running on the dev machine (x86_64).
 
 ## Waiting on the user
 
-Pending now:
-1. Approve M8 and merge `feature/m8`.
-2. Quota numbers (still the spec defaults: 5 tasks/day, $1/task, $3/day, 1 concurrent).
-3. At M9: choose a $0 host with no credit card (Oracle dropped).
+- Final M9 approval. After it: merge `feature/m9` into `main`, push to `ShreyaasAI/Fixable` (allowed only then), and run `swf_eval cleanup --seeds --apply` to delete the 10 `seed/*` branches on `swf-pr-sandbox`.
+- Fill in Portkey usage before/after in `m9-results.md` (header line).
 
-Open risk (M7): guard latency p50 6.2 s, p95 50 s per judged text, far above research-plan A3 target (≤500 ms). Accepted for now; parallel judging and budget deferred (m7-contract §12).
+Settled 2026-11-23: the wall-ratio miss (1.26 vs <= 1.25) is accepted as recorded; no second trial. Eval PRs #2-#20 on `swf-pr-sandbox` were closed (not merged) and their branches deleted; PR #1 (older live test) left open.
 
-Settled: the Supabase Free project is created in M8 (local Postgres until then); the GitHub token comes in via `POST /v1/me/github-token`; the M2 decisions (Squid proxy, package cache deferred to M9, over-limit estimates rejected at creation, 1 vCPU / 4 GB per task) are in `m2-contract.md` §0.
+Settled 2026-11-22 (m9-contract §0.23–§0.26):
+- Public link deferred to M10 (GitHub Pages UI + Cloudflare tunnel only once the PC has gVisor; Actions can't serve traffic).
+- Eval may push 10 `seed/<name>` branches to `swf-pr-sandbox`; delete after M9 approval.
+- Eval uses glm-4.7-flash for all phases (product default switches only if DoD passes).
+- Paid tasks ("2 free/day, then $1 per task") = real payments: deferred to a new post-M10 milestone (spec §5 lists billing as a non-goal; spec update needed then). M9 keeps spec-default quotas.
+- M9 eval host: local PC (Docker Desktop, runc); gVisor already proven on CI (M8 A5). Live LLM + real PRs to `swf-pr-sandbox` approved.
+
+Open risks: provider HTTP 429 under concurrency (M9: 1 of 10 concurrent tasks failed `retries_exhausted`; 21 model-step retries vs 0 single; needs backoff or provider capacity before a public deploy); M7 guard latency (p95 50 s per judged text; cold-start guard 170-254 s on the first two single tasks); gVisor pids-limit can end the sandbox (m8 §5); cache memory kept at 256m (lead's call; m9 §13 A1); runsc and arm64 untested on the eval host; `swf_eval report` to stdout fails on a cp1252 Windows console (use `--write`).
 
 ## Next action
 
-M8 is done and awaits user approval and merge (2026-11-22). Next is **M9** (concurrency + evaluation): read implementation-plan §18 M9. Carried risks and open items: `m8-contract.md` §5. No push to Fixable before M9 is done.
+M9 close-out done (2026-11-23), on `feature/m9`; last code commit `1562d27` (`M9 T11`: `submit_plan.steps` is a string on the wire, m9 §13 A2). Results and cleanup are in the working tree, uncommitted until the lead commits `M9: results and close-out`.
+- Wait for the user's final M9 approval. Then: merge `feature/m9` into `main`; push to `ShreyaasAI/Fixable` (allowed only after approval); `swf_eval cleanup --seeds --apply`.
+- Then M10 (public deploy, minimal web UI, deferred items per m9-contract §6: public link, paid tasks post-M10, product default model, gVisor/Arm host decision, Supabase keep-alive, guard latency budget). Before a public deploy, handle provider 429 under concurrency.
 
 ## Reading guide
 
@@ -54,6 +62,7 @@ Read by need, not front to back:
 | M6 interfaces and decisions (working contract) | `docs/software-factory/m6-contract.md` — §0 decisions; §4 `swf.pr`; §11 deferred |
 | M7 interfaces, decisions and amendments (working contract) | `docs/software-factory/m7-contract.md` — §13 amendments A1–A5 override §0–§12; §11 close-out |
 | M8 interfaces, decisions and amendments (working contract) | `docs/software-factory/m8-contract.md` — §13 amendments A1–A5 override §0–§6; §5 results and carried risks |
+| M9 interfaces, decisions, DoD (working contract) | `docs/software-factory/m9-contract.md` — §0 decisions (§0.23–26 user answers), §1 interfaces, §3 tasks, §13 amendments |
 | The original process rules from the user | `PROMPT.md` |
 | Baseline for the agent's system prompt | `system_prompts/Cursor_*` (adapt the behavioural rules; the tool schemas don't apply) |
 

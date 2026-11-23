@@ -367,10 +367,17 @@ def run_id() -> str:
 
 
 @pytest.fixture(scope="session")
-def egress_config() -> EgressConfig:
-    """Proxy and per-task networks are named per run (`swf-test-<run>-...`)."""
+def egress_config(tmp_path_factory: pytest.TempPathFactory) -> EgressConfig:
+    """Proxy, package cache and networks are named per run (`swf-test-<run>-...`).
+
+    The cache directory is a per-session temp dir, never `./pkgcache`.
+    """
     return EgressConfig(
-        proxy_name=f"swf-test-{RUN_ID}-egress", network_prefix=f"swf-test-{RUN_ID}-task-"
+        proxy_name=f"swf-test-{RUN_ID}-egress",
+        network_prefix=f"swf-test-{RUN_ID}-task-",
+        pkgcache_name=f"swf-test-{RUN_ID}-pkgcache",
+        pkgcache_dir=tmp_path_factory.mktemp("pkgcache"),
+        egress_network=f"swf-test-{RUN_ID}-egress-net",
     )
 
 

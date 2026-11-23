@@ -10,3 +10,5 @@ workspaces/
 .env
 .env.*
 .m8-vm/
+pkgcache/
+.m9-eval/

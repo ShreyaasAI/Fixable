@@ -14,7 +14,13 @@ from pathlib import Path
 import pytest
 
 from swf.egress import EgressConfig, EgressInfo
-from swf.sandbox import SandboxRuntimeError, check_runtime, open_task_sandbox, parse_runtimes
+from swf.sandbox import (
+    SandboxRuntimeError,
+    check_runtime,
+    open_task_sandbox,
+    parse_runtimes,
+    sandbox_user,
+)
 from swf.worker import EnvRequest
 
 IMAGE = "python:3.12-slim"
@@ -61,7 +67,9 @@ def test_sandbox_runs_under_runsc(
         )
         assert inspected.stdout.strip() == "runsc"
         assert "gVisor" in env.execute({"command": "dmesg"})["output"]
-        assert env.execute({"command": "id -u"})["output"].strip() == "1000"
+        uid = sandbox_user().split(":")[0]
+        assert uid != "0"
+        assert env.execute({"command": "id -u"})["output"].strip() == uid
     finally:
         env.cleanup()
 

@@ -1,7 +1,7 @@
 # Web Coding Agent — Problem Specification (v2)
 
 - **Purpose:** Define *what* the MVP must do and *why*, precisely enough that a new session can plan and build it without the original transcript.
-- **Last updated:** 2026-11-22
+- **Last updated:** 2026-11-23
 - **Status:** Approved (v2, 2026-11-19 — supersedes v1). Zero-cost constraint applied 2026-11-19
 - **Related artifacts:** `docs/software-factory/research-plan.md` (Approved) · `docs/software-factory/implementation-plan.md` (Under review) · `PROMPT.md` (process rules) · `system_prompts/Cursor_*` (agent prompt baseline)
 
@@ -66,7 +66,7 @@ The harness re-runs the target test once to confirm. The backend applies the dif
    - **Gateway:** Portkey as the unified gateway.
 10. Evidence produced by the agent before any completion claim; the harness re-runs the target test once before the PR [D] (harness re-run proposed and not objected to).
 11. Pre-flight resource estimation and admission control: notify the user **before** the task starts [D].
-12. **Zero infrastructure cost [D]:** execution host = **Oracle Cloud Always Free Arm VM (2 OCPU / 12 GB total, arm64)**; database/auth = **Supabase Free** (500 MB DB, pauses after ~7 days of low activity); free LLM models. Concurrency: **2 tasks at once**, each limited to **4 GB / 1 OCPU**; further tasks queue [D].
+12. **Zero infrastructure cost [D]:** execution host = **Oracle Cloud Always Free Arm VM (2 OCPU / 12 GB total, arm64)** (dropped 2026-11-22, needs a card; M9 ran on the local PC; public host open for M10); database/auth = **Supabase Free** (500 MB DB, pauses after ~7 days of low activity); free LLM models. Concurrency: **2 tasks at once**, each limited to **4 GB / 1 OCPU**; further tasks queue [D].
 13. Limits: steps, cost, wall time; any failing step retries ≤ 3 times, then asks the user [D].
 14. Append-only audit log per user [D].
 15. Implementation language: **Python** for backend/agent/harness; SQL for the database; the frontend may use another language [D].
@@ -138,7 +138,7 @@ Other end states: `rejected`, `failed` (with partial evidence), `interrupted` (r
 
 ## 10. Success criteria
 
-- [ ] Across **10 seeded bug repos**, each task can end `completed` with a PR whose evidence shows the target test failing before and passing after, with no new `AGENTS.md`-suite failures.
+- [x] (M9 single pass, 2026-11-23: 10/10 completed and resolved; `m9-results.md`) Across **10 seeded bug repos**, each task can end `completed` with a PR whose evidence shows the target test failing before and passing after, with no new `AGENTS.md`-suite failures.
 - [ ] Completion without an evidence bundle is impossible; the harness re-run agrees with the agent's evidence.
 - [ ] No workspace change before plan approval (backstop proves it).
 - [ ] Every non-allowlisted or guardrail-flagged next command waits for approval; rejected ones never execute.
@@ -146,7 +146,7 @@ Other end states: `rejected`, `failed` (with partial evidence), `interrupted` (r
 - [ ] PRs only target `agent/<task-id>` → base; no merge API call exists in the code.
 - [ ] User A cannot read user B's tasks/events (RLS tests).
 - [ ] Pre-flight warns before start when the estimate exceeds the threshold.
-- [ ] 2 concurrent tasks: wall time ≤ 1.25× single-task; resolve-rate drop ≤ 10%.
+- [ ] 2 concurrent tasks: wall time ≤ 1.25× single-task; resolve-rate drop ≤ 10%. (M9, 2026-11-23: resolve drop 10 points met; wall ratio 1.26 not met; miss accepted by the user, no second trial. Not ticked.)
 - [ ] A user exceeding a quota is refused before the task starts; the kill switch stops running tasks within 30 s [P].
 - [ ] Seeded injection/PII/malicious inputs are flagged; malformed model output is caught by Portkey schema/regex checks.
 
@@ -163,7 +163,7 @@ Other end states: `rejected`, `failed` (with partial evidence), `interrupted` (r
 
 1. Quota values — proposed defaults: 5 tasks/user/day, $1 cost cap per task, $3 per user per day, max 1 concurrent task per user [P].
 2. Quota values above were proposed; accepted as defaults with the spec approval (2026-11-19). M8 (2026-11-22) implements them as defaults; the user has given no new numbers.
-3. M9 host: Oracle Always Free was dropped (needs a credit card, 2026-11-22). Choose a $0 host without a card at M9.
+3. M9 host: Oracle Always Free was dropped (needs a credit card, 2026-11-22). Resolved 2026-11-22 [D, user]: the M9 eval ran on the local PC (Docker Desktop, runc, x86_64). The public-deploy host remains open for M10.
 
 Resolved 2026-11-19: open beta + abuse controls (replaces invite-only); GitHub access = OAuth user token; per-task 4 GB / 1 OCPU (= 1 vCPU on Arm; corrected 2026-11-20, user); guard model `zai/glm-4.7-flash`; host = Oracle Always Free (2 tasks); Supabase Free.
 

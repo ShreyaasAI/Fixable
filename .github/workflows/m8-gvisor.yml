@@ -1,11 +1,12 @@
-# M8 DoD under gVisor (m8-contract §13 A5): the non-live suite with sandboxes on runsc.
+# M8/M9 DoD under gVisor (m8-contract §13 A5, m9-contract T9): the non-live suite with sandboxes
+# on runsc, run as the default runner user (uid 1001).
 # Runs on the private CI repo only. No repo secrets: `-m "not live"` needs none.
 name: m8-gvisor
 
 on:
   workflow_dispatch:
   push:
-    branches: [feature/m8]
+    branches: [feature/m8, feature/m9]
 
 permissions:
   contents: read
@@ -23,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false  # the uid-1000 test user can read .git/config
+          persist-credentials: false  # the test user can read .git/config
 
       - uses: astral-sh/setup-uv@v6
         with:
@@ -48,27 +49,19 @@ jobs:
           rt="$(docker info --format '{{json .Runtimes}}')"; echo "$rt"; grep -q '"runsc"' <<<"$rt"
           docker run --rm --runtime=runsc alpine:3 dmesg | sed -n '1,3p'
 
-      # Sandboxes run as --user 1000:1000 and write the bind-mounted workspace (pytest tmp_path).
-      # The runner user is uid 1001, so its tmp dirs are not writable by uid 1000. Minimal fix,
-      # as on the VM (m8 §0.15): run pytest as a uid-1000 user. Reuse one if the image has it,
-      # else create `swf`; add it to the docker group and give it the checkout (uv writes .venv).
-      - name: Prepare uid-1000 test user
+      # M9 §0.7: sandboxes run as the host uid:gid (sandbox_user()), so pytest runs as the default
+      # runner user (uid 1001) with no chown. Its primary gid is the `docker` group: harmless,
+      # sandboxes get no Docker socket and the gid only tags files in the workspace.
+      - name: Prepare test environment
         run: |
           set -euo pipefail
-          u="$(getent passwd 1000 | cut -d: -f1 || true)"
-          if [ -z "$u" ]; then sudo useradd -m -u 1000 -s /bin/bash swf; u=swf; fi
-          home="$(getent passwd "$u" | cut -d: -f6)"
-          sudo install -d -o 1000 -g 1000 "$home"
-          sudo usermod -aG docker "$u"
-          sudo chown -R 1000:1000 "$GITHUB_WORKSPACE"
-          # Ubuntu 24.04 homes may be 0750: let uid 1000 traverse to the checkout.
-          p="$GITHUB_WORKSPACE"; while [ "$p" != / ]; do sudo chmod o+x "$p"; p="$(dirname "$p")"; done
-          sudo -u "$u" test -w "$GITHUB_WORKSPACE/pyproject.toml"
-          echo "TEST_USER=$u" >> "$GITHUB_ENV"
           echo "LOG=$RUNNER_TEMP/m8-ci-pytest.log" >> "$GITHUB_ENV"
-          echo "JUNIT=/tmp/m8-ci-junit.xml" >> "$GITHUB_ENV"  # /tmp: writable by the test user
+          echo "JUNIT=$RUNNER_TEMP/m8-ci-junit.xml" >> "$GITHUB_ENV"
           echo "UV_BIN=$(command -v uv)" >> "$GITHUB_ENV"
-          echo "test user: $u ($(id "$u"))"
+          mkdir -p "$RUNNER_TEMP/pkgcache"
+          # `runner` context is not allowed in job-level env; set it here.
+          echo "SWF_PKGCACHE_DIR=$RUNNER_TEMP/pkgcache" >> "$GITHUB_ENV"
+          echo "runner: $(id)"
 
       # test_m8_host_isolation's gateway:22 case only means something if the host listens on 22.
       - name: Ensure a host listener on port 22
@@ -85,7 +78,7 @@ jobs:
       - name: Host isolation before the firewall rule (expected to fail, not gating)
         continue-on-error: true
         run: |
-          sudo -u "$TEST_USER" -H env PYTHONDONTWRITEBYTECODE=1 SWF_SANDBOX_RUNTIME=runsc \
+          env PYTHONDONTWRITEBYTECODE=1 SWF_SANDBOX_RUNTIME=runsc \
             "$UV_BIN" run --locked pytest -o addopts="" -q -rs tests/test_m8_host_isolation.py
 
       - name: Host firewall rule (as ops/vm-bootstrap.sh, m8 §0.14)
@@ -100,11 +93,11 @@ jobs:
         run: |
           set -uo pipefail
           { uname -m; docker info --format '{{json .Runtimes}}'; runsc --version | sed -n '1p'; git -c safe.directory="$GITHUB_WORKSPACE" log --oneline -1; } | tee "$LOG"
-          sudo -u "$TEST_USER" -H env PYTHONDONTWRITEBYTECODE=1 SWF_SANDBOX_RUNTIME=runsc \
+          env PYTHONDONTWRITEBYTECODE=1 SWF_SANDBOX_RUNTIME=runsc \
             "$UV_BIN" run --locked pytest -o addopts="" -q -m "not live" -rs --junitxml="$JUNIT" 2>&1 | tee -a "$LOG"
           exit "${PIPESTATUS[0]}"
 
-      - name: gVisor and Docker tests ran (not skipped)
+      - name: gVisor, workspace-owner and pkgcache Docker tests ran (not skipped)
         if: always()
         run: |
           set -euo pipefail

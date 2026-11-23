@@ -18,7 +18,17 @@ FORBIDDEN = {
     "graphql auto merge": re.compile(r"enablePullRequestAutoMerge"),
     "merge literal": re.compile(r"""["']merge["']"""),
 }
-KNOWN_METHODS = {"get_user", "list_repos", "get_repo", "branch_exists", "get_file", "create_pull"}
+KNOWN_METHODS = {
+    "get_user",
+    "list_repos",
+    "get_repo",
+    "branch_exists",
+    "get_file",
+    "create_pull",
+    # M9 eval cleanup (m9-contract §1.5): close a PR, delete an agent/ or seed/ ref. Never merge.
+    "close_pull",
+    "delete_branch",
+}
 
 
 def test_no_source_file_can_merge_a_pull_request() -> None:
