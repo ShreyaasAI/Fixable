@@ -4,7 +4,7 @@
 
 - **Purpose:** The interface contract and ordered task list for M9. If something here is wrong, report it. Do not silently diverge.
 - **Last updated:** 2026-11-23
-- **Status:** Draft v2: user answers Q1–Q4 and review fixes applied (2026-11-22); awaiting user approval to build. Branch `feature/m9` (worktree `.claude/worktrees/m9-plan`), on top of `4f982a4` (M8 merged).
+- **Status:** Built and evaluated (2026-11-23). Contract v2 approved 2026-11-22. Live run `run-20261123b`; user decision 2026-11-23: "Accept, close M9" (wall-ratio miss accepted). Awaiting final M9 approval; no push to Fixable before it. Branch `feature/m9` (worktree `.claude/worktrees/m9-plan`), on top of `4f982a4` (M8 merged).
 - **Sources:** plan §5, §7, §13, §14, §16, §18 M9; spec §4 items 12–13, §8 (package cache row), §10 (criteria), §12 Q1 and Q3; research plan §6 item 9, §7.2, §8, RQ3, RQ9; m2 §0.2, §4, A6; m6 §0; m7 §13; m8 §0.15, §5, §6, §13 A5.
 - **Roles [D, user]:** Opus = planner, coder, reviewer. Sonnet = bash/ops, docs, test writer. Haiku = tester (runs suites, reports counts and failures, edits nothing). $0 infrastructure only.
 
@@ -666,7 +666,7 @@ def test_parse_mem(raw: str, mb: int) -> None:
 - [ ] Add `feature/m9` to `on.push.branches`. Remove the step that creates or uses a uid-1000 user and chowns the checkout; pytest runs as the default runner user (uid 1001). Its primary gid is the `docker` group, which is harmless because sandboxes get no Docker socket. Keep runsc, the firewall rule, the gate and the leftovers check. Add `SWF_PKGCACHE_DIR: ${{ runner.temp }}/pkgcache`.
 - [ ] Gate: also fail if `test_m9_workspace_owner` has no executed cases, or any `test_m9_pkgcache_docker` case is skipped.
 - [ ] Red evidence: before T2 is merged into the CI branch, the owner test fails as uid 1001. Run it once on a commit with T1 only, if cheap; otherwise state that it was not captured.
-- [ ] Push `feature/m9` to `ShreyaasAI/swf-ci` (never Fixable). Read the run with `gh run view`. Done when it shows 0 failed, `test_m8_gvisor` ran, `test_m9_workspace_owner` ran, and no leftovers.
+- [x] Push `feature/m9` to `ShreyaasAI/swf-ci` (never Fixable). Read the run with `gh run view`. Done when it shows 0 failed, `test_m8_gvisor` ran, `test_m9_workspace_owner` ran, and no leftovers.
 - [ ] Commit `M9 T9: CI runs as runner uid; M9 gates`.
 
 ### T10 (test-writer + lead, live; §0.24): seed branches on GitHub
@@ -733,7 +733,26 @@ If the wall or resolve checks fail, M9 still closes with the measured table and 
 
 ## 5. Results
 
-To be filled in T12: run id, controls, summary table (copied from m9-results.md), CI run id, PR cleanup log, risks carried.
+- **Run:** `run-20261123b`, 2026-11-23 (run.json date 2026-11-22 UTC), git sha 1562d27, local PC (16 CPU, ~6.2 GB Docker Desktop, runc), model `@glm-4-7-flash/glm-4.7-flash`, repo `ShreyaasAI/swf-pr-sandbox`, 10 seeds. Full table: `docs/software-factory/m9-results.md`.
+- **Controls:** 10/10 pristine target fails, 10/10 reference resolves.
+- **Summary:**
+
+| Metric | Single | Concurrent (2 users) | Value | DoD | Met |
+|---|---|---|---|---|---|
+| Median per-task wall (s) | 90.3 | 114.1 | 1.26 | <= 1.25 | **no** |
+| Median wall, completed only (s) | 90.3 | 105.8 | 1.17 | info | - |
+| Resolve rate | 10/10 | 9/10 | 10 points | <= 10 | yes |
+| Cost | $0.00 | $0.00 | $0.00 | <= $1 | yes |
+
+- Budget: 463 calls, 19 PRs (cap 22), 2763.6 s.
+- **DoD miss (wall ratio 1.26 vs 1.25, by 0.01):** concurrent seed 01 failed `retries_exhausted` after 473 s: z-ai HTTP 429 three times in verify after its tests passed. A provider 429 is not an infra failure (§0.13), so no re-run. The concurrent pass had 21 model-step retries vs 0 single: the provider rate limit is the bottleneck, not the host.
+- **User decision (2026-11-23):** "Accept, close M9". Miss accepted as recorded; no second trial.
+- **First live run** `run-20261123a` aborted (2 tasks, 0 PRs): see §13 A2. Fixed in 1562d27.
+- **CI:** `ShreyaasAI/swf-ci` run 45034707266 on `e65ae0a` (2026-11-22): success. Non-live suite under runsc 2134 passed, 10 skipped; gate: 2/3 `test_m8_gvisor` ran (inverse case skipped), 1/1 `test_m9_workspace_owner`, 5 `test_m9_pkgcache_docker`; leftovers none. The earlier run 45034598815 on `c33e526` failed on the workflow env error fixed in `e65ae0a`. The A2 fix (`1562d27`) has not run on CI; it is covered by the local suite.
+- **Haiku retest of the non-live suite:** 2138 passed, 16 skipped (platform/env only), 0 failed at `1562d27` (2026-11-23); ruff, ruff format, mypy clean.
+- **Portkey usage before/after:** to be filled by the user (also in `m9-results.md`).
+- **PR cleanup (2026-11-23):** PRs #2-#20 closed (not merged), their `agent/<task-id>` branches deleted. PR #1 (older 2026-11-21 live test) left open. The 10 `seed/*` branches stay until final M9 approval, then `swf_eval cleanup --seeds --apply`.
+- **Risks carried:** provider 429 under concurrency (needs backoff or more provider capacity before a public deploy); runsc overhead and arm64 untested on the eval host (§0.1); `swf_eval report` to stdout fails on a cp1252 Windows console (use `--write` or `PYTHONIOENCODING=utf-8`); product default model unchanged because the DoD was not fully met (§6).
 
 ## 6. Deferred
 

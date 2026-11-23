@@ -1,7 +1,7 @@
 # Web Coding Agent — Research Plan (v2)
 
 - **Purpose:** Record what is known, what must be validated, the architecture options with trade-offs, and the recommended minimal architecture and milestones for the MVP in the problem specification.
-- **Last updated:** 2026-11-21
+- **Last updated:** 2026-11-23
 - **Status:** Approved (v2, 2026-11-19, via the user's go-ahead to implement — supersedes v1)
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — source of truth for scope) · `docs/software-factory/implementation-plan.md` (Under review) · `PROMPT.md` · `system_prompts/Cursor_*`
 
@@ -15,13 +15,13 @@ Labels: **[D]** decision (from the spec) · **[V]** verified on 2026-11-19 · **
 |---|---|---|---|
 | RQ1 | Can `beam-free` (reasoning) and `glm-4.7-flash` (tools) share one linear tool-call history through Portkey? | Phase-based model switch [D] | Spike: 2-phase scripted task; check the message format survives the switch |
 | RQ2 | Are both models reachable through Portkey with tool calling, and does litellm cost tracking know them? | Output guardrails run on Portkey; cost limits | One call each; inspect `cost`; registry JSON if missing |
-| RQ3 | Does `glm-4.7-flash` meet the resolve-rate target on the 10 seeded repos? | Quality [A2] | Eval in milestone M9 |
+| RQ3 | Does `glm-4.7-flash` meet the resolve-rate target on the 10 seeded repos? | Quality [A2] | Eval in milestone M9. **Result (2026-11-23, `run-20261123b`):** single pass 10/10 resolved; concurrent (2 users) 9/10, drop 10 points (target <= 10: met). The one failure was a provider HTTP 429, not a wrong fix. Wall ratio 1.26 vs <= 1.25 (missed, accepted by the user). `m9-results.md` |
 | RQ4 | Can an agent subclass block for minutes–hours on a web approval inside `DefaultAgent.run`? | Approvals, `ask_user` | Spike: wait on a Postgres row |
 | RQ5 | Do `DockerEnvironment` + `run_args` give mount, egress proxy, limits, non-root, `cap-drop`? | Sandbox | Sandbox test suite |
 | RQ6 | How robust is a bash-parser classifier against chaining, `eval`, `python -c`? | Approval boundary | Adversarial corpus |
 | RQ7 | Latency/accuracy of the input guardrails (free-LLM injection check; Guardrails AI PII/toxicity/malicious intent)? | Every input passes through them | Benchmark on seeded + clean corpus |
 | RQ8 | What do Portkey output guardrails offer for regex + JSON schema checks on tool-call arguments, and how do they fail (block vs flag)? | Output guardrail [D] | Portkey docs + spike |
-| RQ9 | How accurately can memory/CPU be estimated before start? | Pre-flight [D] | Compare estimates vs measured peaks on the seeded repos |
+| RQ9 | How accurately can memory/CPU be estimated before start? | Pre-flight [D] | Compare estimates vs measured peaks on the seeded repos. **M9 data (2026-11-23):** measured peak memory 8-49 MB per task (`m9-results.md`, "Peak MB"); the estimate-vs-peak comparison was not done in M9. |
 | RQ10 | ~~GitHub App vs OAuth~~ — resolved: OAuth user token [D] | — | Prototyped in M6: clone + PR with the user token (live PR on the throwaway repo) |
 
 ## 2. Already known
@@ -107,7 +107,7 @@ No persistent shell (`cd`/`export` don't persist) → state it in the prompt · 
 1. **Token isolation [D]:** GitHub tokens live only in the backend; the clone remote never embeds a token; nothing credential-like is mounted.
 2. **Clean-clone PR [D]:** the backend exports the diff (hooks off, `core.fsmonitor=false`), applies it in a separate clean clone, commits with `core.hooksPath=/dev/null`, pushes `agent/<task-id>`, opens the PR via the API. The branch name is computed server-side. No merge call exists.
 3. **Tenant isolation [D]:** Supabase RLS on every user table; per-task container and workspace; workers use a service role and enforce `user_id` in code; tests for cross-user access.
-4. **Egress [D]:** internal Docker network → proxy with a registry allowlist; 1-day package cache on the host.
+4. **Egress [D]:** internal Docker network → proxy with a registry allowlist; 1-day package cache on the host (built in M9 as an own pull-through server next to the proxy, not inside Squid, which sees only CONNECT tunnels).
 5. **Classifier [D]:** bash parsed per simple command; unparseable, `eval`, subshells, interpreter `-c` → approval; `rm -rf` and DB drops always forbidden.
 6. **Read-only backstop [D]:** workspace snapshot at investigate start; any change at `submit_plan` → block.
 7. **Guardrails [D]:**
@@ -167,7 +167,7 @@ Browser ──REST/SSE──▶ API (FastAPI, Python)
                  ├─ SandboxEnv(DockerEnvironment): tools, hardening, read-only backstop
                  └─ EvidenceService: bundle check + harness re-run of the target test
                               │
-        Docker task container ── internal net ── egress proxy (registry allowlist, 1-day cache)
+        Docker task container ── internal net ── egress proxy (registry allowlist) + pull-through package cache (1 day)
 ```
 
 ## 9. MVP milestones (tests written first in each [D])

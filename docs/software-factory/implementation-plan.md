@@ -1,8 +1,8 @@
 # Web Coding Agent — Implementation Plan
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
-- **Last updated:** 2026-11-22
-- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 and M6 approved, merged to `main` (`1235cdc`); M7 implemented on `m7-check`, awaiting user review (2026-11-21)
+- **Last updated:** 2026-11-23
+- **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 and M6 approved, merged to `main` (`1235cdc`); M7 and M8 approved, merged to `main` (M8: `4f982a4`); M9 built and evaluated on `feature/m9`, wall-ratio miss accepted (user, 2026-11-23), awaiting final M9 approval
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
 Labels: **[D]** confirmed decision · **[A]** assumption · **[Q]** open question. Nothing here goes beyond the approved spec; roadmap items are listed only as non-goals.
@@ -100,7 +100,7 @@ The version is pinned in `pyproject.toml`; subclass contract tests fail loudly o
 
 - **Host [D]:** Oracle Always Free Arm VM (2 OCPU / 12 GB, arm64), Docker + gVisor (`runsc`).
 - **Per task:** 4 GB / 1 OCPU, `--pids-limit 512`, `--cap-drop ALL`, `--security-opt no-new-privileges`, non-root, `--runtime runsc`, workspace bind-mounted at `/repo`, no Docker socket.
-- **Network:** internal network → egress proxy (domain allowlist of package registries) with a 1-day package cache on the host.
+- **Network:** internal network → egress proxy (domain allowlist of package registries) plus a 1-day pull-through package cache (own container, read-only to tasks; M9, m9-contract §0.6).
 - **Images:** from `AGENTS.md`; pre-flight rejects images without an arm64 variant.
 
 ## 8. Repository projection and isolation
@@ -180,7 +180,7 @@ Token backend-only + encrypted · clean-clone PR, hooks off · branch computed s
 ## 16. Rollout
 
 1. Local dev (Windows + Docker Desktop) through M7.
-2. Supabase Free project from M8. Host for M9: open, must be $0 with no credit card (Oracle dropped 2026-11-22).
+2. Supabase Free project from M8. M9 evaluation ran on the local PC (2026-11-23); the public-deploy host is still open (M10) and must be $0 with no credit card (Oracle dropped 2026-11-22).
 3. Open beta after M10 with quotas on. A free-tier keep-alive (scheduled health ping) prevents Supabase pausing.
 
 ## 17. Non-goals (MVP)
@@ -278,10 +278,12 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - **DoD:** tests green on the Oracle VM. **Changed [D, 2026-11-22, user]:** the Oracle VM needs a credit card, so the DoD ran on GitHub Actions (private repo `ShreyaasAI/swf-ci`, x86_64, runsc). Arm is untested.
 - **Result (2026-11-22, awaiting review):** CI run 44985961092: 1774 passed, 10 skipped, 0 failed (7m43s). Host isolation red before the firewall rule, green after. CI run 3 44987517565 green: 1774 passed, 0 failed (after a gVisor pids-limit test fix, `m8-contract.md` §5). Local: 1778 passed, 0 failed. Kill measured 2.3 s / 1.9 s locally (limit 30 s). Supabase Free project "Fixable" (`yztwunzllretrgsrauuf`): 5 migrations applied, 9 Supabase tests passed. Quota values remain the spec defaults [Q]. Adds `POST /v1/admin/resume`, table `system_state`, setting `SWF_SANDBOX_RUNTIME`. Carried risks and amendments: `m8-contract.md` §5, §13.
 
-### M9 — Concurrency + evaluation (Oracle VM)
-- [ ] 10 seeded repos through the full pipeline; 2 concurrent tasks
-- **DoD:** wall time ≤ 1.25× single-task; resolve-rate drop ≤ 10%; results table.
-- Also built here: the 1-day pull-through package cache on the host, read-only to tasks (deferred from M2 [D, 2026-11-20]).
+### M9 — Concurrency + evaluation (local PC)
+- [x] 10 seeded repos through the full pipeline; 2 concurrent tasks. **Ticked with a note: the wall-ratio DoD was missed (1.26 vs <= 1.25) and the miss was accepted by the user (2026-11-23). Awaiting final approval.**
+- **DoD:** wall time ≤ 1.25× single-task (**not met, 1.26**); resolve-rate drop ≤ 10% (met, 10 points); results table (`m9-results.md`, done). **Changed [D, 2026-11-22, user]:** host is the local PC (Docker Desktop, runc), not the Oracle VM; gVisor was proven on CI in M8.
+- Also built here: the 1-day pull-through package cache, read-only to tasks (deferred from M2 [D, 2026-11-20]); Linux sandbox user = host uid:gid.
+- **Result (2026-11-23, live run `run-20261123b`, git sha 1562d27):** host local PC (16 CPU, ~6.2 GB Docker Desktop, runc), model `@glm-4-7-flash/glm-4.7-flash`, repo `ShreyaasAI/swf-pr-sandbox`, 10 seeds. Controls 10/10 (pristine target fails, reference resolves). Single pass 10/10 completed and resolved, median wall 90.3 s. Concurrent pass (2 users) 9/10 resolved, median wall 114.1 s. **Wall ratio 1.26 vs DoD <= 1.25: not met (miss by 0.01).** Resolve drop 10 points vs <= 10: met. Cost $0.00 (<= $1): met. 463 calls, 19 PRs (cap 22), 2763.6 s. Cause of the miss: concurrent seed 01 failed `retries_exhausted` after 473 s (z-ai HTTP 429 three times in verify after its tests passed). A provider 429 is not an infra failure (m9 §0.13), so no re-run. Completed-only ratio 1.17. Concurrent pass had 21 model-step retries vs 0 single: the provider rate limit, not the host, is the bottleneck. First live run `run-20261123a` aborted (2 tasks, 0 PRs): glm-4.7-flash wrote `submit_plan.steps` as a bare numbered list (invalid JSON); fixed in 1562d27 (`steps` is a string on the wire, m9 §13 A2). **User decision 2026-11-23: "Accept, close M9"**: the DoD miss is accepted as recorded, no second trial. PRs #2-#20 closed (not merged) and their branches deleted; `seed/*` branches await final approval. Table: `m9-results.md`. Portkey usage before/after: to be filled by the user. Haiku retest: 2138 passed, 16 skipped (platform/env only), 0 failed at `1562d27` (2026-11-23); ruff, ruff format, mypy clean.
+- **Decisions [D, 2026-11-23]:** (1) accept the 1.26 wall ratio; (2) package cache is our own pull-through server (`swf.pkgcache`), not Squid (m9 §0.6); (3) Linux sandbox user is the host uid:gid via `sandbox_user()` (1000:1000 on Windows); (4) product default model unchanged: switching to glm for all phases needed the DoD to pass, and it did not (m9 §6). Follow-up before a public deploy: handle provider 429 under concurrency (backoff or provider capacity).
 
 ### M10 — Minimal web UI
 - [ ] Every spec §3 action works in the browser (manual checklist + screenshots)
