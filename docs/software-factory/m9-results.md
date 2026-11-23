@@ -77,6 +77,7 @@
 - Concurrency also showed up as model-step retries: 21 in the concurrent pass, 0 in the single pass. The provider rate limit is the bottleneck under 2 concurrent users, not the host.
 - The first live run (`run-20261123a`) was aborted after 2 tasks and 0 PRs: every task hit `repeated_format_error` (contract §13 A2). Fixed in 1562d27 before this run.
 - The first two single tasks (681 s, 217 s) include cold-start guard latency (254 s, 170 s guard).
+- Portkey guardrails dashboard (user, 2026-11-23): 688 requests "unscreened". Expected: Portkey saved guardrails are opt-in (m7 §13 A1) and `SWF_PORTKEY_CONFIG` was unset, so no request carried a guardrail config. All M9 screening was done by the in-process guard (glm judge on issue, AGENTS.md and tool observations, plus regex output checks): 200 judged chunks, 0 flags. The judge calls themselves also appear in Portkey as unscreened requests. Turning Portkey guardrails on by default is still deferred (m7 §12) and is an M10 decision.
 - `swf_eval report` to stdout fails on a Windows cp1252 console (`≤`). Use `--write` or `PYTHONIOENCODING=utf-8`.
 
 ## PR cleanup log
