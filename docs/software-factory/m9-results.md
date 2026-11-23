@@ -9,7 +9,7 @@
 - Agent limits: step_limit 80, wall_time_limit_seconds 1800
 - Budget used: $0.0, 463 calls, 19 PRs, 2763.6 s
 - Abort reason: none
-- Portkey usage before/after: (filled in by the user)
+- Portkey usage: Portkey dashboard, user-reported 2026-11-23, hourly buckets (local time): 01:00 hour 87 requests, 11 LLM errors (HTTP 429), ~153k tokens (128k request, 24k response); 02:00 hour 129 requests, 5 LLM errors, ~200k request + 27k response tokens. Eval tasks ran 01:47-02:31, so the 01:00 bucket also holds the aborted run `run-20261123a` and the format-error probes. Dashboard requests (216) are fewer than the harness count (463 = 263 agent calls + 200 guard chunks); the reason is not established. Cost $0 (free models).
 
 ## Summary
 

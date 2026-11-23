@@ -27,7 +27,7 @@ Repo state: `main` contains M0–M9 and tracks `origin` = `ShreyaasAI/Fixable` (
 
 ## Waiting on the user
 
-- Fill in Portkey usage before/after in `m9-results.md` (header line).
+- Nothing for M9. M10 starts on the user's go.
 
 Settled 2026-11-23: the wall-ratio miss (1.26 vs <= 1.25) is accepted as recorded; no second trial. Eval PRs #2-#20 on `swf-pr-sandbox` were closed (not merged) and their branches deleted; PR #1 (older live test) left open.
 
