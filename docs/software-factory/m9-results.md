@@ -83,4 +83,4 @@
 
 - 2026-11-23: PRs #2-#20 on ShreyaasAI/swf-pr-sandbox (the 19 eval PRs) closed, not merged. Their `agent/<task-id>` branches deleted.
 - PR #1 (older live test from 2026-11-21, branch `agent/580616c5-...`) left open; not part of the eval.
-- The 10 `seed/*` branches remain until the user's final M9 approval, then `swf_eval cleanup --seeds --apply`.
+- The 10 `seed/*` branches were deleted after the user's M9 approval (2026-11-23).

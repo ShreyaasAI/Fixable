@@ -4,7 +4,7 @@
 
 - **Purpose:** The interface contract and ordered task list for M9. If something here is wrong, report it. Do not silently diverge.
 - **Last updated:** 2026-11-23
-- **Status:** Built and evaluated (2026-11-23). Contract v2 approved 2026-11-22. Live run `run-20261123b`; user decision 2026-11-23: "Accept, close M9" (wall-ratio miss accepted). Awaiting final M9 approval; no push to Fixable before it. Branch `feature/m9` (worktree `.claude/worktrees/m9-plan`), on top of `4f982a4` (M8 merged).
+- **Status:** Built and evaluated (2026-11-23). Contract v2 approved 2026-11-22. Live run `run-20261123b`; user decision 2026-11-23: "Accept, close M9" (wall-ratio miss accepted). **Approved (user, 2026-11-23)**: merged to `main` (`955818b`), pushed to `ShreyaasAI/Fixable`. Branch `feature/m9` (worktree `.claude/worktrees/m9-plan`), on top of `4f982a4` (M8 merged).
 - **Sources:** plan §5, §7, §13, §14, §16, §18 M9; spec §4 items 12–13, §8 (package cache row), §10 (criteria), §12 Q1 and Q3; research plan §6 item 9, §7.2, §8, RQ3, RQ9; m2 §0.2, §4, A6; m6 §0; m7 §13; m8 §0.15, §5, §6, §13 A5.
 - **Roles [D, user]:** Opus = planner, coder, reviewer. Sonnet = bash/ops, docs, test writer. Haiku = tester (runs suites, reports counts and failures, edits nothing). $0 infrastructure only.
 
@@ -751,7 +751,7 @@ If the wall or resolve checks fail, M9 still closes with the measured table and 
 - **CI:** `ShreyaasAI/swf-ci` run 45034707266 on `e65ae0a` (2026-11-22): success. Non-live suite under runsc 2134 passed, 10 skipped; gate: 2/3 `test_m8_gvisor` ran (inverse case skipped), 1/1 `test_m9_workspace_owner`, 5 `test_m9_pkgcache_docker`; leftovers none. The earlier run 45034598815 on `c33e526` failed on the workflow env error fixed in `e65ae0a`. The A2 fix (`1562d27`) has not run on CI; it is covered by the local suite.
 - **Haiku retest of the non-live suite:** 2138 passed, 16 skipped (platform/env only), 0 failed at `1562d27` (2026-11-23); ruff, ruff format, mypy clean.
 - **Portkey usage before/after:** to be filled by the user (also in `m9-results.md`).
-- **PR cleanup (2026-11-23):** PRs #2-#20 closed (not merged), their `agent/<task-id>` branches deleted. PR #1 (older 2026-11-21 live test) left open. The 10 `seed/*` branches stay until final M9 approval, then `swf_eval cleanup --seeds --apply`.
+- **PR cleanup (2026-11-23):** PRs #2-#20 closed (not merged), their `agent/<task-id>` branches deleted. PR #1 (older 2026-11-21 live test) left open. The 10 `seed/*` branches were deleted after M9 approval (2026-11-23).
 - **Risks carried:** provider 429 under concurrency (needs backoff or more provider capacity before a public deploy); runsc overhead and arm64 untested on the eval host (§0.1); `swf_eval report` to stdout fails on a cp1252 Windows console (use `--write` or `PYTHONIOENCODING=utf-8`); product default model unchanged because the DoD was not fully met (§6).
 
 ## 6. Deferred
