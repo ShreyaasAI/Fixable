@@ -24,6 +24,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "types-PyYAML>=6.0",
+    "playwright>=1.65.2",
 ]
 
 [build-system]
@@ -43,6 +44,7 @@ markers = [
     "gvisor: needs gVisor (SWF_SANDBOX_RUNTIME=runsc and runsc listed by `docker info`); auto-skipped otherwise",
     "supabase: checks a real Supabase project; skips itself without SWF_SUPABASE_DB_URL",
     "live: calls external services (models or GitHub); each live test skips itself without its credentials",
+    "e2e: Playwright browser tests against a local stack (Docker, npm, Chromium); skipped with a reason when any is missing; excluded from CI",
 ]
 
 [tool.ruff]

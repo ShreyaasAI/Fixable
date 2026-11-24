@@ -180,7 +180,7 @@ def _preflight(user: CurrentUser, ref: RepoRef, capacity: Capacity) -> Preflight
 In `store`:
 
 ```python
-class Limits(BaseModel):     # mirror of AbuseLimits quota fields, for the API
+class QuotaLimits(BaseModel):  # mirror of AbuseLimits quota fields (A2: not `Limits`, which is preflight.Limits)
     tasks_per_day: int; cost_per_day_usd: float; cost_per_task_usd: float; concurrent_tasks: int
 class Remaining(BaseModel):
     tasks_today: int; cost_today_usd: float; concurrent_tasks: int   # each floored at 0
@@ -191,7 +191,7 @@ def open_task_count(conn, user_id) -> int: ...   # non-terminal tasks of the use
 
 - `check_quota` keeps its lock and return codes. It computes `remaining(...)` and returns the first exhausted quota, in today's order: tasks, then cost, then concurrent.
 - A test asserts that `check_quota` refuses exactly when the matching `remaining` field is `<= 0` (property-style, over a small grid).
-- `Me` gains `limits: store.Limits` and `remaining: store.Remaining`. `usage_today` stays.
+- `Me` gains `limits: store.QuotaLimits` and `remaining: store.Remaining`. `usage_today` stays.
 
 ### 1.4 Admin read model and `GET /v1/admin/status` (R4)
 
@@ -319,6 +319,20 @@ web/
 - **Admin page:**
   - Shows the pause state with Pause all / Resume all, and the users table with Kill / Resume per row (own row disabled).
   - Kill asks for confirmation and lists the number of tasks it will cancel (`open_tasks`).
+
+### 2.1 Test ids (amendment A1, 2026-11-24: shared by the UI and the e2e tests)
+
+The UI puts these `data-testid` values on the elements named. E2E tests select by test id, role or label only, never by CSS class.
+
+| Screen | Test ids |
+|---|---|
+| Shell | `nav-dashboard`, `nav-new`, `nav-admin` (admins only), `user-login`, `signout`, `app-error` (`role="alert"`) |
+| Sign-in | `github-signin`; dev builds only: `dev-token` (textarea), `dev-provider-token`, `dev-signin` (the dev form's wrapper carries `data-marker="swf-dev-signin"`) |
+| Dashboard | `quota-tasks`, `quota-cost`, `quota-concurrent` (each shows "N left"), `task-list`, `task-row` (`data-task-id`, `data-status`), `empty-tasks` |
+| New task | `repo-select` (`<select>`; an option per repo, `disabled` when not `can_push`), `branch-input`, `description-input`, `failing-test-input`, `preflight-button`, `preflight-result` (`data-decision`), `start-button`, `error-summary` (`role="alert"`, focused after a failed check), `field-error` (next to the field it names, `data-field`) |
+| Task detail | `task-status` (`aria-live="polite"`, `data-status`), `timeline`, `event-row` (`data-seq`, `data-type`), `noise-toggle` (checkbox), `noise-hidden-count`, `tool-output` (`<details>`; `open` when ≤ 40 lines), `approval-card` (`data-approval-id`, `data-kind`), `approval-comment`, `approve-button`, `reject-button`, `question-card` (`data-question-id`), `answer-input`, `answer-button`, `evidence-list`, `evidence-item`, `pr-link`, `cancel-button`, `delete-button`, `task-error` |
+| Dialog | `confirm-dialog` (`<dialog>`), `confirm-yes`, `confirm-no` |
+| Admin | `admin-state` (`data-paused="true"\|"false"`), `pause-all`, `resume-all`, `admin-user-row` (`data-user-id`, `data-disabled`), `kill-user`, `resume-user`, `admin-error` |
 
 ---
 

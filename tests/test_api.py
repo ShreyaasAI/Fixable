@@ -148,7 +148,15 @@ def test_me_creates_profile_and_reports_usage(
     user = make_user(linked=False)
     resp = client.get("/v1/me", headers=auth(user))
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {
+    body = resp.json()
+    assert set(body.pop("limits")) == {  # m10a §1.3 (values: tests/test_m10_quota.py)
+        "tasks_per_day",
+        "cost_per_day_usd",
+        "cost_per_task_usd",
+        "concurrent_tasks",
+    }
+    assert set(body.pop("remaining")) == {"tasks_today", "cost_today_usd", "concurrent_tasks"}
+    assert body == {
         "user_id": str(user.id),
         "github_login": user.login,
         "is_admin": False,

@@ -12,3 +12,6 @@ workspaces/
 .m8-vm/
 pkgcache/
 .m9-eval/
+web/node_modules/
+web/dist/
+web/.env.local
