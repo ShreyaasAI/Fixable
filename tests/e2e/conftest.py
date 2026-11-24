@@ -260,8 +260,21 @@ def _browser(_playwright: Playwright) -> Iterator[Browser]:
     browser.close()
 
 
+@pytest.fixture(scope="session")
+def _warm_vite(_browser: Browser, e2e_stack: Stack) -> None:
+    """Load the app once: Vite bundles its dependencies on the first page load (slow, and it may
+    reload the page), which must not count against the first test's assertion timeouts."""
+    context = _browser.new_context(base_url=e2e_stack.web_url)
+    try:
+        page = context.new_page()
+        page.goto("/")
+        expect(page.get_by_test_id("dev-token")).to_be_visible(timeout=120_000)
+    finally:
+        context.close()
+
+
 @pytest.fixture
-def new_page(_browser: Browser, e2e_stack: Stack) -> Iterator[Callable[[], Page]]:
+def new_page(_browser: Browser, e2e_stack: Stack, _warm_vite: None) -> Iterator[Callable[[], Page]]:
     """Open further pages (own context, own storage), e.g. a second signed-in user."""
     contexts = []
 

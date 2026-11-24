@@ -245,17 +245,14 @@ def test_admin_pause_resume_and_kill(new_page: Callable[[], Page], e2e_stack: St
     row.get_by_test_id("kill-user").click()
     confirm_dialog(admin_page)
     expect(row).to_have_attribute("data-disabled", "true", timeout=SHORT)
+    # The kill cancelled the member's task. A disabled account gets 403 on every route, so the
+    # member's page can no longer load it: check the row, then the member's view of the lockout.
+    rows = e2e_stack.sql("select status from public.tasks where id = %s", [uuid.UUID(task_id)])
+    assert rows[0][0] == "cancelled", rows
     member_page.reload()
-    wait_status(member_page, "cancelled", timeout=60_000)
-    fill_new_task(member_page, "After the kill.")
-    member_page.get_by_test_id("preflight-button").click()
-    start = member_page.get_by_test_id("start-button")
-    if start.is_enabled():  # the pre-flight may pass; the create is where the account check is
-        start.click()
     expect(member_page.locator(ERRORS).first).to_contain_text(
         re.compile("account_disabled|disabled", re.I), timeout=SHORT
     )
-    assert uuid.UUID(task_id)
 
     admin_page.get_by_test_id("admin-user-row").and_(
         admin_page.locator(f'[data-user-id="{member.user_id}"]')
