@@ -8,9 +8,11 @@ import time
 import uuid
 from collections.abc import Callable
 
-import fakes
 import pytest
-from conftest import (
+from playwright.sync_api import Page, expect
+
+from e2e import fakes
+from e2e.conftest import (
     DONE,
     ERRORS,
     SHORT,
@@ -28,8 +30,6 @@ from conftest import (
     wait_released,
     wait_status,
 )
-from playwright.sync_api import Page, expect
-
 from swf_eval.localstack import EvalUser
 
 pytestmark = pytest.mark.e2e
@@ -191,13 +191,14 @@ def test_long_output_collapsed(page: Page, finished_task: FinishedTask) -> None:
     expect(long_output).to_be_attached(timeout=SHORT)
     # > 40 lines: the first 40 are shown, the toggle shows the rest
     expect(long_output).to_have_attribute("data-expanded", "false")
-    assert len(long_output.locator("pre").inner_text().splitlines()) == 40
+    line_count = r"el => el.textContent.split('\n').length"  # innerText drops a trailing blank
+    assert long_output.locator("pre").evaluate(line_count) == 40
     toggle = long_output.get_by_test_id("output-toggle")
     expect(toggle).to_have_attribute("aria-expanded", "false")
     toggle.click()
     expect(long_output).to_have_attribute("data-expanded", "true")
     expect(toggle).to_have_attribute("aria-expanded", "true")
-    assert len(long_output.locator("pre").inner_text().splitlines()) > 40
+    assert long_output.locator("pre").evaluate(line_count) > 40
     # a short output is shown in full, with no toggle
     short = page.get_by_test_id("tool-output").filter(has_not_text="/usr/lib:")
     assert short.count() >= 1

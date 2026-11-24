@@ -50,7 +50,17 @@ def test_production_build_has_no_dev_sign_in(installed: None, tmp_path: Path) ->
 
 
 def test_dev_build_has_the_dev_sign_in(installed: None, tmp_path: Path) -> None:
-    env = {**os.environ, "VITE_AUTH_MODE": "dev"}
+    # a dev build: Vite sets import.meta.env.DEV from NODE_ENV, not from --mode
+    env = {**os.environ, "VITE_AUTH_MODE": "dev", "NODE_ENV": "development"}
     out = tmp_path / "dev"
-    npm("exec", "--", "vite", "build", "--outDir", str(out), "--emptyOutDir", env=env)
+    npm(
+        "exec",
+        "--",
+        "vite",
+        "build",
+        "--outDir",
+        str(out),
+        "--emptyOutDir",
+        env=env,
+    )
     assert marker_in(out)

@@ -21,12 +21,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import fakes
 import httpx
 import psycopg
 import pytest
 from playwright.sync_api import Browser, Page, Playwright, expect, sync_playwright
 
+from e2e import fakes
 from swf_eval.localstack import EvalUser, LocalStack
 
 HERE = Path(__file__).resolve().parent
