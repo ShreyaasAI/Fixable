@@ -297,6 +297,14 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
   - UI: sign-in + quota, repo picker (base branch prefilled from `default_branch`), create + pre-flight, task list, live timeline (status, messages, tool calls with args, outputs collapsed > ~40 lines, exit codes; noisy events behind a toggle; fetch-streaming SSE with `Last-Event-ID` resume), approval/question cards rebuilt from the event replay, evidence, PR link, admin page (global pause/resume, per-user kill/resume, current state; admins only).
   - Tests: written first. Python Playwright e2e (~10, one per §3 action + admin) on a real API, local Postgres and Docker sandboxes, with a scripted model via a test-only worker launcher, a fake GitHub API and a fake PR publisher; `VITE_AUTH_MODE=dev` token sign-in in dev builds only (a test checks production builds lack it); Chromium installed once. Plus the manual checklist with screenshots and one live smoke PR on `swf-pr-sandbox`. E2E in CI → M10b.
   - Out of M10a: branch dropdown, public deploy/tunnel, gVisor on the PC, CORS allowlist, payments, quota editing.
+- **M10-0 refactors [D, user, 2026-11-24: "Approve all 6"]** (detail in the m10a contract):
+  1. one app helper for token lookup and pre-flight, used by `POST /v1/tasks` and `POST /v1/preflight`;
+  2. split `worker.main()` into a reusable `build_runner_deps(...)` plus `main()` (the e2e launcher swaps model and publisher);
+  3. `swf/events.py` with the event-type list and its noise subset; `emit` rejects unknown types; the UI's TS list is checked against it;
+  4. read-only `store.system_status()` for `/v1/admin/status`; one scope/target helper for kill/resume;
+  5. `store.delete_task` (terminal only, FK cascade, audit) plus a worker sweep of workspace folders with no task;
+  6. `remaining(...)` quota function next to `check_quota`, used by `/v1/me`.
+  - Rejected: splitting `app.py` into routers, moving the SSE generator, typed per-event payloads, `github.py` changes. Noted for M10b: each SSE stream holds a threadpool thread.
 - **Added [D, user, 2026-11-23]:** turn Portkey saved guardrails on by default (`SWF_PORTKEY_CONFIG`, with production output checks such as a secret regex), in addition to the in-process guard (m7 §12, m9-results notes).
 
 ## 19. Open questions [Q]
