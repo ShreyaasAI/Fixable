@@ -15,3 +15,4 @@ pkgcache/
 web/node_modules/
 web/dist/
 web/.env.local
+!web/.env.example
