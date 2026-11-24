@@ -4,7 +4,7 @@
 
 - **Purpose:** The interface contract and ordered task list for M10a. If something here is wrong, report it. Do not silently diverge.
 - **Last updated:** 2026-11-24
-- **Status:** Draft v1. Awaiting user approval. Branch `feature/m10` (worktree `.claude/worktrees/m10`), on top of `main` `e60f9dd`.
+- **Status:** Contract v1 **approved (user, 2026-11-24: "Approve, Q1 yes")**; Q1 resolved as proposed. Branch `feature/m10` (worktree `.claude/worktrees/m10`), on top of `main` `e60f9dd`.
 - **Sources:**
   - plan §18 M10 (design, grill rounds 1-3, plus the M10-0 refactors);
   - spec §3 (user actions), §9, §11;
@@ -108,7 +108,7 @@ An admin can also pause, resume, kill and resume users. About 12 Playwright e2e 
 
 ### Open questions for the user
 
-- **Q1. Portkey "on by default" (§1.8).**
+- **Q1. Portkey "on by default" (§1.8).** Resolved: yes, as proposed [D, user, 2026-11-24].
   - Proposal: the worker refuses to start unless `SWF_PORTKEY_CONFIG` is a `pc-…` slug or the literal `off` (logged as a warning).
   - You create the saved config in the Portkey dashboard (runbook §5.3): a regex output check for secrets, not in deny mode, so hook results come back and the existing fail-closed rule raises a `guard_flag` when they are missing.
   - The e2e worker and the scripted tests use `off`.
@@ -448,7 +448,7 @@ Shared fixture `e2e_stack`:
 - [ ] **T3 Quota remainder (R6).** `Limits`, `Remaining`, `remaining`, `open_task_count`; `check_quota` via `remaining`; `/v1/me`. §1.3.
 - [ ] **T4 Admin status (R4).** `system_status`, `_scope_target`, `GET /v1/admin/status`. §1.4.
 - [ ] **T5 Delete and sweep (R5).** `delete_task`, `release_task`, `existing_task_ids`, reaper change, runner release, `orphan_workspaces`, sweep, route. §1.5.
-- [ ] **T6 Portkey on by default.** `portkey_config_from_env`; worker fail-fast; test env updates; LocalStack default `off`. §1.8. **Blocked on Q1.**
+- [ ] **T6 Portkey on by default.** `portkey_config_from_env`; worker fail-fast; test env updates; LocalStack default `off`. §1.8.
 - [ ] **T7 Wiring splits (R2).** `build_runner_deps`, `build_app_deps`. §1.6, §1.7.
 - [ ] **T8 E2E harness and failing e2e tests.** `playwright` dev dependency; `LocalStack` `api_argv`/`worker_argv`; `tests/e2e/{conftest.py,fake_api.py,fake_worker.py}`; tests §4.2, red against a stub `web/`; `pytest.ini` marker; CI `-m` filter.
 - [ ] **T9 `web/` scaffold.** package and lockfile, Vite proxy, tokens CSS (§3), `api.ts`, `sse.ts`, `auth.ts` (supabase + dev), `messages.ts`, router; `test_m10_web_build.py` green.
