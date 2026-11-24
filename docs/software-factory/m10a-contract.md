@@ -305,7 +305,7 @@ web/
 - **Timeline:**
   - The timeline replays from seq 0, then streams.
   - Event rows are keyed by `seq` (no duplicates on resume).
-  - Tool output longer than 40 lines is collapsed (`<details>`, first 40 shown). `returncode` is shown as a badge.
+  - Tool output longer than 40 lines shows its first 40 lines and a toggle for the rest (A3). `returncode` is shown as a badge.
   - The noise toggle (default off) hides `NOISE_TYPES` and shows "N hidden".
   - The current status sits in one `aria-live="polite"` region; the log itself is not live.
 - **Cards:**
@@ -326,13 +326,24 @@ The UI puts these `data-testid` values on the elements named. E2E tests select b
 
 | Screen | Test ids |
 |---|---|
-| Shell | `nav-dashboard`, `nav-new`, `nav-admin` (admins only), `user-login`, `signout`, `app-error` (`role="alert"`) |
+| Shell | `nav-dashboard`, `nav-new`, `nav-admin` (admins only), `user-login`, `signout`, `app-error` (`role="alert"`; shell-level errors only) |
 | Sign-in | `github-signin`; dev builds only: `dev-token` (textarea), `dev-provider-token`, `dev-signin` (the dev form's wrapper carries `data-marker="swf-dev-signin"`) |
-| Dashboard | `quota-tasks`, `quota-cost`, `quota-concurrent` (each shows "N left"), `task-list`, `task-row` (`data-task-id`, `data-status`), `empty-tasks` |
+| Dashboard | `quota-tasks`, `quota-cost`, `quota-concurrent` (each shows "N left"), `task-list`, `task-row` (`data-task-id`, `data-status`), `empty-tasks`, `page-error` (`role="alert"`) |
 | New task | `repo-select` (`<select>`; an option per repo, `disabled` when not `can_push`), `branch-input`, `description-input`, `failing-test-input`, `preflight-button`, `preflight-result` (`data-decision`), `start-button`, `error-summary` (`role="alert"`, focused after a failed check), `field-error` (next to the field it names, `data-field`) |
-| Task detail | `task-status` (`aria-live="polite"`, `data-status`), `timeline`, `event-row` (`data-seq`, `data-type`), `noise-toggle` (checkbox), `noise-hidden-count`, `tool-output` (`<details>`; `open` when ≤ 40 lines), `approval-card` (`data-approval-id`, `data-kind`), `approval-comment`, `approve-button`, `reject-button`, `question-card` (`data-question-id`), `answer-input`, `answer-button`, `evidence-list`, `evidence-item`, `pr-link`, `cancel-button`, `delete-button`, `task-error` |
+| Task detail | `task-status` (`aria-live="polite"`, `data-status`), `timeline`, `event-row` (`data-seq`, `data-type`), `noise-toggle` (checkbox), `noise-hidden-count`, `tool-output` and `message-output` (`data-expanded`; `"true"` when ≤ 40 lines), `output-toggle` (`aria-expanded`; only when > 40 lines), `approval-card` (`data-approval-id`, `data-kind`), `approval-comment`, `approve-button`, `reject-button`, `question-card` (`data-question-id`), `answer-input`, `answer-button`, `evidence-list`, `evidence-item`, `pr-link`, `cancel-button`, `delete-button`, `task-error`, `page-error` |
 | Dialog | `confirm-dialog` (`<dialog>`), `confirm-yes`, `confirm-no` |
 | Admin | `admin-state` (`data-paused="true"\|"false"`), `pause-all`, `resume-all`, `admin-user-row` (`data-user-id`, `data-disabled`), `kill-user`, `resume-user`, `admin-error` |
+
+### 2.2 Amendments from the M10a code review (2026-11-24; no scope change)
+
+- **A3, long output:** the first 40 lines stay visible and a button shows the rest (a `<details>` hid all of it).
+- **A4, e2e test 4:** a read-only repo cannot be picked (its option is disabled), so the inline-error test uses an unknown base branch (422 `branch_not_found`).
+- **A5, SSE client:** a clean end of stream stops the client only if the last `status` event was terminal; any other end reconnects with `Last-Event-ID`. 401 signs out; other 4xx (except 408, 429) are final.
+- **A6, confirm dialog:** focus opens on Keep (`confirm-no`), the safe choice; Escape keeps.
+- **A7, dev sign-in:** shown only when `import.meta.env.DEV` and `VITE_AUTH_MODE=dev` are both true. A failed GitHub link after OAuth sign-in shows in `app-error`.
+- **A8, frontend layout:** shared pieces sit in `components.tsx` (badge, dialog, alert), `messages.ts` (error text), `events.ts` (noise list), `nav.ts`.
+- **A9, workspace sweep:** each database has one workspaces root. The sweep deletes any UUID folder with no task row, so two stacks must not share a root across databases.
+- **A10, reaper:** a terminal task keeps its `worker_id` for one lease after `finished_at`, so a runner still winding down is not released early (delete answers 409 `task_busy` meanwhile).
 
 ---
 
@@ -411,13 +422,13 @@ Shared fixture `e2e_stack`:
 | 1 | `test_sign_in_links_github_and_shows_quota` | dev sign-in → `POST github-token` → dashboard shows login and remaining quota |
 | 2 | `test_repo_picker_prefills_default_branch` | only pushable repos enabled; branch prefilled |
 | 3 | `test_preflight_shows_estimate_without_creating` | estimate shown; task list still empty |
-| 4 | `test_preflight_error_is_inline` | not-writable repo → message by the field, alert summary focused |
+| 4 | `test_preflight_error_is_inline` | unknown base branch (A4) → message by the field, alert summary focused |
 | 5 | `test_task_runs_live_to_pr_with_evidence` | `[e2e:fix]`: plan approval card → approve → timeline to `completed`; evidence listed; PR link |
 | 6 | `test_question_card_answers` | `[e2e:ask]`: question card → answer → run continues |
 | 7 | `test_reload_resumes_without_duplicates` | reload mid-run: each seq rendered once, stream continues |
 | 8 | `test_noise_toggle` | `guard_check`/`phase_model` hidden by default with a count; shown when toggled |
 | 9 | `test_cancel_then_delete` | `[e2e:slow]` cancel via dialog → cancelled; delete → gone from list; workspace folder removed within one sweep |
-| 10 | `test_long_output_collapsed` | tool output > 40 lines collapsed, expands on click |
+| 10 | `test_long_output_collapsed` | tool output > 40 lines shows its first 40; the toggle shows all |
 | 11 | `test_admin_pause_resume_and_kill` | non-admin: no link, 403 text; admin pause → New task shows `service_paused`; resume; kill user → their task cancelled, they see `account_disabled`; resume user |
 | 12 | `test_keyboard_only_create` | create and approve using the keyboard only; focus ring visible (computed style) |
 

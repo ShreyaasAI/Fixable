@@ -255,6 +255,43 @@ def test_interrupt_orphans_leaves_worker_id_and_lease_null(
     assert (row["worker_id"], row["lease_expires_at"]) == (None, None)
 
 
+def _finished(db: Database, task_id: uuid.UUID, ago_seconds: int, worker_id: str = "w1") -> None:
+    """A real terminal row: `transition_task` cleared the lease; the runner may still hold it."""
+    with db.backend() as conn:
+        conn.execute(
+            "update public.tasks set status = 'cancelled', worker_id = %s,"
+            " lease_expires_at = null, finished_at = now() - make_interval(secs => %s)"
+            " where id = %s",
+            [worker_id, ago_seconds, task_id],
+        )
+
+
+def test_a_just_cancelled_task_keeps_its_worker_while_the_runner_winds_down(
+    fresh_db: Database,
+) -> None:
+    # Review finding 1: a terminal transition nulls the lease, so the reaper must not treat a
+    # fresh terminal row as abandoned; its runner may still be writing (cost, last events).
+    task = queued_task(fresh_db)
+    _finished(fresh_db, task.id, ago_seconds=5)
+
+    with fresh_db.backend() as conn:
+        store.interrupt_orphans(conn, worker_id="w2", restart=False, lease_seconds=90)
+
+    assert task_row(fresh_db, task.id)["worker_id"] == "w1"
+
+
+def test_a_terminal_task_left_by_a_dead_worker_is_released_after_one_lease(
+    fresh_db: Database,
+) -> None:
+    task = queued_task(fresh_db)
+    _finished(fresh_db, task.id, ago_seconds=120)
+
+    with fresh_db.backend() as conn:
+        store.interrupt_orphans(conn, worker_id="w2", restart=False, lease_seconds=90)
+
+    assert task_row(fresh_db, task.id)["worker_id"] is None
+
+
 def test_a_reaped_task_can_then_be_deleted_by_its_owner(m8_client: M8Client) -> None:
     env = m8_client()
     user = env.user()

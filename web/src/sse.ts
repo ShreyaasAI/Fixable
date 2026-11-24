@@ -2,7 +2,7 @@
 // Resumes after the last seen id (`Last-Event-ID`), reconnects with backoff 1 s -> 30 s, and
 // stops on abort or when the server ends the stream for a terminal task (m10a §2).
 
-import { API_BASE, authHeaders } from "./api";
+import { API_BASE, TERMINAL, authHeaders, notifyUnauthorized } from "./api";
 
 export interface StreamEvent {
   seq: number;
@@ -50,6 +50,7 @@ export function streamEvents(taskId: string, opts: StreamOptions): () => void {
   const controller = new AbortController();
   let lastSeq = -1;
   let backoff = 1000;
+  let terminal = false; // the last `status` event moved the task to a terminal status
 
   const run = async (): Promise<void> => {
     while (!controller.signal.aborted) {
@@ -63,7 +64,11 @@ export function streamEvents(taskId: string, opts: StreamOptions): () => void {
         });
         if (!resp.ok || !resp.body) {
           opts.onError?.(resp.status);
-          if (resp.status === 401 || resp.status === 403 || resp.status === 404) return;
+          if (resp.status === 401) notifyUnauthorized();
+          // 4xx is final (bad token, disabled, gone), except timeouts and rate limits.
+          if (resp.status >= 400 && resp.status < 500 && resp.status !== 408 && resp.status !== 429) {
+            return;
+          }
         } else {
           backoff = 1000;
           const reader = resp.body.getReader();
@@ -78,10 +83,15 @@ export function streamEvents(taskId: string, opts: StreamOptions): () => void {
             for (const event of parsed.events) {
               if (event.seq <= lastSeq) continue;
               lastSeq = event.seq;
+              if (event.type === "status" && typeof event.data.to === "string") {
+                terminal = TERMINAL.has(event.data.to);
+              }
               opts.onEvent(event);
             }
           }
-          ended = true;
+          // The server ends the stream only for a terminal task; any other clean end (an API
+          // restart, a proxy closing idle responses) is a reconnect with Last-Event-ID.
+          ended = terminal;
         }
       } catch {
         if (controller.signal.aborted) return;

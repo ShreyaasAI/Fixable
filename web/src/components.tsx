@@ -66,7 +66,13 @@ export function ConfirmDialog(props: ConfirmProps) {
       <h2 id="confirm-title">{props.title}</h2>
       <div className="dialog-body">{props.children}</div>
       <div className="row end">
-        <button type="button" className="btn" data-testid="confirm-no" onClick={props.onCancel}>
+        <button
+          type="button"
+          className="btn"
+          data-testid="confirm-no"
+          onClick={props.onCancel}
+          autoFocus
+        >
           Keep
         </button>
         <button
@@ -74,7 +80,6 @@ export function ConfirmDialog(props: ConfirmProps) {
           className={props.danger ? "btn btn-danger" : "btn btn-primary"}
           data-testid="confirm-yes"
           onClick={props.onConfirm}
-          autoFocus
         >
           {props.confirmLabel}
         </button>

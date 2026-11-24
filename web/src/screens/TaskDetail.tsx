@@ -168,7 +168,7 @@ export function TaskDetail({ taskId, onChange }: { taskId: string; onChange: () 
       </section>
 
       {error && (
-        <div className="alert" role="alert" data-testid="app-error">
+        <div className="alert" role="alert" data-testid="page-error">
           {error}
         </div>
       )}
@@ -518,16 +518,27 @@ function ToolArgs({ args }: { args: unknown }) {
   return null;
 }
 
+/** Output over 40 lines shows its first 40, with a toggle for the rest (m10a §2). */
 function Output({ text, testId }: { text: string; testId: string }) {
-  const lines = text.split("\n").length;
-  const short = lines <= COLLAPSE_LINES;
+  const [open, setOpen] = useState(false);
+  const lines = text.split("\n");
+  const short = lines.length <= COLLAPSE_LINES;
+  const expanded = short || open;
   return (
-    <details className="output" data-testid={testId} open={short || undefined}>
-      <summary>
-        {short ? "Output" : `Output: ${lines} lines (show all)`}
-      </summary>
-      <pre className="code">{text}</pre>
-    </details>
+    <div className="output" data-testid={testId} data-expanded={String(expanded)}>
+      <pre className="code">{expanded ? text : lines.slice(0, COLLAPSE_LINES).join("\n")}</pre>
+      {!short && (
+        <button
+          type="button"
+          className="output-toggle"
+          data-testid="output-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open ? "Show first 40 lines" : `Show all ${lines.length} lines`}
+        </button>
+      )}
+    </div>
   );
 }
 

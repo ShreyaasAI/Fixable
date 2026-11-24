@@ -26,7 +26,7 @@ export function Dashboard({ me }: { me: Me | null }) {
       <h1>Tasks</h1>
       {me && <Quota me={me} />}
       {error && (
-        <div className="alert" role="alert" data-testid="app-error">
+        <div className="alert" role="alert" data-testid="page-error">
           {error}
         </div>
       )}

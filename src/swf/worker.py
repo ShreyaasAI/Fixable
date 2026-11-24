@@ -675,7 +675,9 @@ class Worker:
         """Interrupt expired-lease tasks (and, on restart, our own), then remove leftovers."""
         cfg = self.deps.config
         with self.deps.db.backend() as conn:
-            reaped = store.interrupt_orphans(conn, worker_id=cfg.worker_id, restart=restart)
+            reaped = store.interrupt_orphans(
+                conn, worker_id=cfg.worker_id, restart=restart, lease_seconds=cfg.lease_seconds
+            )
         ids = [task_id for task_id, _ in reaped]
         with self._lock:
             runners = [self.running[t] for t in ids if t in self.running]
@@ -718,7 +720,11 @@ class Worker:
         return stopped
 
     def sweep_workspaces(self) -> list[str]:
-        """Remove `workspaces_root/<id>` folders of deleted tasks; returns the removed names."""
+        """Remove `workspaces_root/<id>` folders of deleted tasks; returns the removed names.
+
+        Assumes one workspaces root per database: a UUID folder with no task row in this database
+        is treated as orphaned (m10a A9).
+        """
         root = self.deps.config.workspaces_root.resolve()
         if not root.is_dir():
             return []

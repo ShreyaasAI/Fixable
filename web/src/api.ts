@@ -21,6 +21,10 @@ export function configureApi(getToken: () => string | null, unauthorized: () => 
   onUnauthorized = unauthorized;
 }
 
+export function notifyUnauthorized(): void {
+  onUnauthorized();
+}
+
 export function authHeaders(): Record<string, string> {
   const token = tokenSource();
   return token ? { Authorization: `Bearer ${token}` } : {};

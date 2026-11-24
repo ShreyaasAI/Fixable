@@ -823,7 +823,7 @@ def renew_leases(
 
 
 def interrupt_orphans(
-    conn: Conn, *, worker_id: str, restart: bool
+    conn: Conn, *, worker_id: str, restart: bool, lease_seconds: int = 90
 ) -> list[tuple[uuid.UUID, str | None]]:
     """Interrupt active tasks whose lease expired (any worker) and, on `restart`, this worker's
     own tasks. Returns (task id, previous worker id); their pendings are expired."""
@@ -849,11 +849,13 @@ def interrupt_orphans(
             [[task_id for task_id, _ in reaped]],
         )
     # A terminal task whose worker died before `release_task` would stay `task_busy` forever.
+    # `transition_task` clears the lease on a terminal move, so the grace period runs from
+    # `finished_at`: one lease, in which a live runner finishes its cleanup and releases it.
     conn.execute(
         "update public.tasks set worker_id = null, lease_expires_at = null"
         " where status = any(%s) and worker_id is not null"
-        " and (lease_expires_at is null or lease_expires_at < now())",
-        [list(TERMINAL_STATUSES)],
+        " and coalesce(finished_at, updated_at) < now() - make_interval(secs => %s)",
+        [list(TERMINAL_STATUSES), lease_seconds],
     )
     return reaped
 

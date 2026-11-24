@@ -304,7 +304,7 @@ def user(e2e_stack: Stack) -> EvalUser:
 
 # --- UI helpers ----------------------------------------------------------------------------
 
-ERRORS = '[data-testid="error-summary"], [data-testid="app-error"]'
+ERRORS = '[data-testid="error-summary"], [data-testid="app-error"], [data-testid="page-error"]'
 TERMINAL = ("completed", "rejected", "failed", "interrupted", "cancelled")
 
 

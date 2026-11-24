@@ -188,6 +188,36 @@ def test_preflight_is_refused_when_the_concurrent_quota_is_used(m8_client: M8Cli
     assert len(env.github.requests) == seen
 
 
+def _paused(env: Env, _user: Any) -> None:
+    env.sql("update system_state set tasks_paused = true")
+
+
+def _over_quota(env: Env, user: Any) -> None:
+    env.sql("insert into quotas_usage (user_id, day, tasks) values (%s, %s, 5)", [user.id, TODAY])
+
+
+# Fail-fast order (m10a §1.2): admission, then the GitHub token, then the repo checks. Each
+# check is set up to fail together with every later one; the earliest must be the one reported.
+ORDER: list[tuple[Callable[[Env, Any], None], tuple[int, str]]] = [
+    (_paused, (503, "service_paused")),
+    (_over_quota, (429, "quota_tasks_per_day")),
+    (_no_token, (409, "github_token_missing")),
+    (_read_only, (422, "repo_not_writable")),
+]
+
+
+@pytest.mark.parametrize("first", range(len(ORDER)), ids=[o[1][1] for o in ORDER])
+def test_preflight_reports_the_earliest_failing_check(m8_client: M8Client, first: int) -> None:
+    env = m8_client()
+    user = env.user()
+    for setup, _expected in ORDER[first:]:
+        setup(env, user)
+
+    assert _detail(preflight(env, user)) == ORDER[first][1]
+    if first < 3:  # refused before the token is read: no GitHub call at all
+        assert env.github.requests == []
+
+
 # --- rate limits ------------------------------------------------------------------------------
 
 

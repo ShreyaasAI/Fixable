@@ -304,7 +304,7 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
   4. read-only `store.system_status()` for `/v1/admin/status`; one scope/target helper for kill/resume;
   5. `store.delete_task` (terminal only, FK cascade, audit) plus a worker sweep of workspace folders with no task;
   6. `remaining(...)` quota function next to `check_quota`, used by `/v1/me`.
-  - Rejected: splitting `app.py` into routers, moving the SSE generator, typed per-event payloads, `github.py` changes. Noted for M10b: each SSE stream holds a threadpool thread.
+  - Rejected: splitting `app.py` into routers, moving the SSE generator, typed per-event payloads, `github.py` changes. Noted for M10b: each SSE stream holds a threadpool thread. Also for M10b: `POST /v1/preflight` has only the per-user API rate limit, and each call costs GitHub and registry requests; consider a preflight-specific limit or cache.
 - **Added [D, user, 2026-11-23]:** turn Portkey saved guardrails on by default (`SWF_PORTKEY_CONFIG`, with production output checks such as a secret regex), in addition to the in-process guard (m7 §12, m9-results notes).
 
 ## 19. Open questions [Q]

@@ -106,7 +106,7 @@ code,
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
-:focus:not(:focus-visible):not(button):not(a):not(input):not(select):not(textarea):not(summary) {
+:focus:not(:focus-visible):not(button):not(a):not(input):not(select):not(textarea) {
   outline: none;
 }
 
@@ -468,11 +468,16 @@ input[type="checkbox"] {
   max-height: 32rem;
   white-space: pre;
 }
-.output summary {
+.output-toggle {
+  background: none;
+  border: 0;
+  padding: var(--s1) 0;
   cursor: pointer;
   color: var(--muted-fg);
+  font: inherit;
   font-size: 0.875rem;
   min-height: 24px;
+  text-decoration: underline;
 }
 .kv {
   margin: var(--s1) 0 0;

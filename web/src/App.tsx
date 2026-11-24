@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, configureApi, type Me } from "./api";
-import { currentToken, initAuth, signOut, subscribe } from "./auth";
+import { currentToken, initAuth, onLinkError, signOut, subscribe } from "./auth";
 import { AppError } from "./components";
 import { messageFor } from "./messages";
 import { go } from "./nav";
@@ -31,6 +31,7 @@ export function App() {
 
   useEffect(() => {
     configureApi(currentToken, () => void signOut());
+    onLinkError((err) => setError(`Linking GitHub failed: ${messageFor(err)}`));
     const off = subscribe((state) => setToken(state?.token ?? null));
     initAuth()
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))

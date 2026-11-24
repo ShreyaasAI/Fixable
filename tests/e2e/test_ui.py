@@ -189,13 +189,20 @@ def test_long_output_collapsed(page: Page, finished_task: FinishedTask) -> None:
     expect(page.get_by_test_id("timeline")).to_be_visible(timeout=SHORT)
     long_output = page.get_by_test_id("tool-output").filter(has_text="/usr/lib:").first
     expect(long_output).to_be_attached(timeout=SHORT)
-    assert long_output.evaluate("el => el.open") is False  # > 40 lines: collapsed
-    long_output.locator("summary").click()
-    expect(long_output).to_have_js_property("open", True)
-    # a short output stays open
+    # > 40 lines: the first 40 are shown, the toggle shows the rest
+    expect(long_output).to_have_attribute("data-expanded", "false")
+    assert len(long_output.locator("pre").inner_text().splitlines()) == 40
+    toggle = long_output.get_by_test_id("output-toggle")
+    expect(toggle).to_have_attribute("aria-expanded", "false")
+    toggle.click()
+    expect(long_output).to_have_attribute("data-expanded", "true")
+    expect(toggle).to_have_attribute("aria-expanded", "true")
+    assert len(long_output.locator("pre").inner_text().splitlines()) > 40
+    # a short output is shown in full, with no toggle
     short = page.get_by_test_id("tool-output").filter(has_not_text="/usr/lib:")
     assert short.count() >= 1
-    assert short.first.evaluate("el => el.open") is True
+    expect(short.first).to_have_attribute("data-expanded", "true")
+    expect(short.first.get_by_test_id("output-toggle")).to_have_count(0)
 
 
 def test_admin_pause_resume_and_kill(new_page: Callable[[], Page], e2e_stack: Stack) -> None:
@@ -217,7 +224,7 @@ def test_admin_pause_resume_and_kill(new_page: Callable[[], Page], e2e_stack: St
     expect(state).to_have_attribute("data-paused", "false")
     try:
         admin_page.get_by_test_id("pause-all").click()
-        _confirm_if_asked(admin_page)
+        confirm_dialog(admin_page)
         expect(state).to_have_attribute("data-paused", "true")
         # a paused service refuses at the pre-flight, before Start
         member_page.get_by_test_id("nav-new").click()
@@ -242,6 +249,12 @@ def test_admin_pause_resume_and_kill(new_page: Callable[[], Page], e2e_stack: St
         admin_page.locator(f'[data-user-id="{member.user_id}"]')
     )
     expect(row).to_have_attribute("data-disabled", "false", timeout=SHORT)
+    # the dialog opens on the safe choice; Escape keeps the user
+    row.get_by_test_id("kill-user").click()
+    expect(admin_page.get_by_test_id("confirm-no")).to_be_focused(timeout=SHORT)
+    admin_page.keyboard.press("Escape")
+    expect(admin_page.get_by_test_id("confirm-dialog")).to_be_hidden(timeout=SHORT)
+    expect(row).to_have_attribute("data-disabled", "false")
     row.get_by_test_id("kill-user").click()
     confirm_dialog(admin_page)
     expect(row).to_have_attribute("data-disabled", "true", timeout=SHORT)
@@ -256,19 +269,9 @@ def test_admin_pause_resume_and_kill(new_page: Callable[[], Page], e2e_stack: St
 
     admin_page.get_by_test_id("admin-user-row").and_(
         admin_page.locator(f'[data-user-id="{member.user_id}"]')
-    ).get_by_test_id("resume-user").click()
-    _confirm_if_asked(admin_page)
+    ).get_by_test_id("resume-user").click()  # resuming is safe: no dialog
     expect(row).to_have_attribute("data-disabled", "false", timeout=SHORT)
-
-
-def _confirm_if_asked(page: Page) -> None:
-    dialog = page.get_by_test_id("confirm-dialog")
-    try:
-        dialog.wait_for(state="visible", timeout=1500)
-    except Exception:  # noqa: BLE001 - no dialog for this action
-        return
-    page.get_by_test_id("confirm-yes").click()
-    expect(dialog).to_be_hidden(timeout=SHORT)
+    expect(admin_page.get_by_test_id("confirm-dialog")).to_be_hidden()
 
 
 def _focus_ring_visible(page: Page) -> bool:
@@ -288,6 +291,15 @@ def _type_into(page: Page, test_id: str, text: str) -> None:
     page.keyboard.type(text)
 
 
+def _tab_to(page: Page, test_id: str, *, limit: int = 8) -> None:
+    """Press Tab until the element with `test_id` has focus (the tab order reaches it)."""
+    for _ in range(limit):
+        page.keyboard.press("Tab")
+        if page.evaluate("() => document.activeElement?.dataset?.testid ?? ''") == test_id:
+            return
+    raise AssertionError(f"Tab never reached {test_id}")
+
+
 def test_keyboard_only_create(page: Page, e2e_stack: Stack, user: EvalUser) -> None:
     sign_in(page, user)
     page.get_by_test_id("nav-new").focus()
@@ -303,13 +315,13 @@ def test_keyboard_only_create(page: Page, e2e_stack: Stack, user: EvalUser) -> N
     expect(select.locator("option:checked")).to_contain_text(fakes.REPO)
     expect(page.get_by_test_id("branch-input")).to_have_value("main")
     _type_into(page, "description-input", f"{fakes.TAG_FIX} Page 2 repeats the last item.")
-    page.get_by_test_id("preflight-button").focus()
+    _tab_to(page, "preflight-button")
     assert _focus_ring_visible(page), "no visible focus ring on the Check button"
     page.keyboard.press("Enter")
     expect(page.get_by_test_id("preflight-result")).to_be_visible(timeout=SHORT)
     start = page.get_by_test_id("start-button")
     expect(start).to_be_enabled()
-    start.focus()
+    _tab_to(page, "start-button")
     assert _focus_ring_visible(page), "no visible focus ring on the Start button"
     page.keyboard.press("Enter")
     page.wait_for_url("**/#/tasks/*", timeout=SHORT)

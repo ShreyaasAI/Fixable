@@ -5,7 +5,8 @@
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { api } from "./api";
 
-export const DEV_AUTH: boolean = import.meta.env.VITE_AUTH_MODE === "dev";
+// Both checks: a production build never has the dev form, even if .env.local sets the mode.
+export const DEV_AUTH: boolean = import.meta.env.DEV && import.meta.env.VITE_AUTH_MODE === "dev";
 
 export interface AuthState {
   token: string;
@@ -17,6 +18,12 @@ const DEV_KEY = "swf.dev-session";
 let current: AuthState | null = null;
 const listeners = new Set<Listener>();
 let client: SupabaseClient | null = null;
+let linkErrorHandler: (err: unknown) => void = () => {};
+
+/** Where a failed GitHub link after an OAuth sign-in is reported (the app shell shows it). */
+export function onLinkError(fn: (err: unknown) => void): void {
+  linkErrorHandler = fn;
+}
 
 function emit(state: AuthState | null): void {
   current = state;
@@ -62,7 +69,7 @@ export async function initAuth(): Promise<void> {
     }
     emit({ token: session.access_token });
     if (event === "SIGNED_IN" && session.provider_token) {
-      void linkGitHub(session.provider_token).catch(() => {});
+      void linkGitHub(session.provider_token).catch((err: unknown) => linkErrorHandler(err));
     }
   });
   const { data } = await sb.auth.getSession();
