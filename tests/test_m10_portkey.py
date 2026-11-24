@@ -128,7 +128,6 @@ def test_main_without_the_config_fails_before_any_other_startup_step(
             raise AssertionError("Database must not be constructed before the Portkey check")
 
     monkeypatch.delenv("SWF_PORTKEY_CONFIG", raising=False)
-    monkeypatch.setenv("SWF_MSWEA_CONFIG_DIR", str(tmp_path / "mswea"))
     monkeypatch.setattr(swf.worker, "Database", RecordingDatabase)
     monkeypatch.setattr(swf.sandbox, "sandbox_user", record("sandbox_user"))
     monkeypatch.setattr(swf.sandbox, "check_runtime", record("check_runtime"))

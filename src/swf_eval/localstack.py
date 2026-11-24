@@ -166,6 +166,8 @@ class LocalStack:
                 # the harness's own cache dir, so the worker computes the same conf-sha
                 "SWF_PKGCACHE_DIR": str(EgressConfig().pkgcache_dir),
                 "PYTHONDONTWRITEBYTECODE": "1",
+                # m10a §1.8: the worker requires it; a knob may set a real `pc-...` slug
+                "SWF_PORTKEY_CONFIG": "off",
             }
         )
         extra.update(self.knobs)

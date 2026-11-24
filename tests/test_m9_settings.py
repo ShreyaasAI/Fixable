@@ -179,6 +179,7 @@ def test_main_refuses_root_before_any_docker_work(monkeypatch: pytest.MonkeyPatc
         monkeypatch.setenv(name, "")  # main() -> _mswea.isolate() mutates these; restore after
     monkeypatch.delenv("SWF_SANDBOX_USER", raising=False)
     monkeypatch.setenv("SWF_SANDBOX_RUNTIME", "runsc")
+    monkeypatch.setenv("SWF_PORTKEY_CONFIG", "off")  # m10a §1.8: checked first
 
     def forbidden(*_: object, **__: object) -> None:
         raise AssertionError("Docker work before the root check")

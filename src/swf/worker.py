@@ -37,7 +37,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from swf import _mswea, policy, states, store
 from swf.agent.channel import (
@@ -77,7 +77,10 @@ from swf.pr import (
     render_pr_body,
 )
 from swf.preflight import Limits
-from swf.settings import AbuseLimits, SettingsError
+from swf.settings import AbuseLimits, Settings, SettingsError
+
+if TYPE_CHECKING:
+    from swf.egress import EgressConfig
 
 logger = logging.getLogger("swf.worker")
 
@@ -879,26 +882,84 @@ def agent_overrides_from_env(env: Mapping[str, str] | None = None) -> dict[str, 
     return out
 
 
+class _Unset:
+    """Sentinel type: an argument that was not passed (so `None` can mean "no publisher")."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = _Unset()
+
+
+def portkey_startup_check(env: Mapping[str, str]) -> str | None:
+    """m10a §1.8: the saved Portkey guardrail config, or None for an explicit `off` (warned)."""
+    from swf.agent.model import portkey_config_from_env
+
+    config = portkey_config_from_env(env)
+    if config is None:
+        logger.warning("Portkey saved guardrails are off (SWF_PORTKEY_CONFIG=off)")
+    return config
+
+
+def build_runner_deps(
+    settings: Settings,
+    db: Database,
+    config: WorkerConfig,
+    egress: EgressConfig,
+    *,
+    model_factory: Callable[[], AgentModel] | None = None,
+    workspaces: WorkspaceProvider | None = None,
+    publisher: PullRequestPublisher | None | _Unset = UNSET,
+    guard_factory: Callable[[], Guardrails] | None = None,
+) -> RunnerDeps:
+    """The production wiring of a worker (m10a §1.6); every part can be replaced. Opens nothing.
+
+    Defaults: `SWF_LOCAL_SOURCE` set -> copy that directory, no PR (dev); else clone from GitHub
+    and publish a PR. The model is `PhaseModel.from_env`, the guard `Guardrails.from_env`."""
+    from swf.agent.model import PhaseModel
+    from swf.github import GitHubClient
+    from swf.gitops import GitOps
+    from swf.pr import GitHubPublisher, GitHubWorkspace, db_token_source
+    from swf.sandbox import open_task_sandbox
+    from swf.tokens import TokenCipher
+
+    def env_factory(req: EnvRequest) -> ToolEnv:
+        return open_task_sandbox(egress, req)
+
+    source = os.environ.get("SWF_LOCAL_SOURCE")
+    default_workspaces: WorkspaceProvider
+    default_publisher: PullRequestPublisher | None
+    if source:
+        default_workspaces = LocalCopyWorkspace(Path(source), config.workspaces_root)
+        default_publisher = None
+    else:
+        tokens = db_token_source(db, TokenCipher(settings.token_encryption_key))
+        git = GitOps()
+        api = GitHubClient(base_url=settings.github_api_url)
+        default_workspaces = GitHubWorkspace(git, tokens, config.workspaces_root)
+        default_publisher = GitHubPublisher(git, api, tokens, on_retry=emit_publish_retry)
+    return RunnerDeps(
+        db=db,
+        workspaces=default_workspaces if workspaces is None else workspaces,
+        env_factory=env_factory,
+        model_factory=PhaseModel.from_env if model_factory is None else model_factory,
+        config=config,
+        publisher=default_publisher if isinstance(publisher, _Unset) else publisher,
+        guard_factory=Guardrails.from_env if guard_factory is None else guard_factory,
+    )
+
+
 def main() -> None:
     config_dir = _mswea.isolate()
     assert os.environ["MSWEA_GLOBAL_CONFIG_DIR"] == str(config_dir)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
-    from swf.agent.model import PhaseModel
     from swf.egress import EgressConfig, ensure_egress
-    from swf.github import GitHubClient
-    from swf.gitops import GitOps
-    from swf.pr import GitHubPublisher, GitHubWorkspace, db_token_source
-    from swf.sandbox import (
-        check_runtime,
-        cleanup_orphans,
-        open_task_sandbox,
-        runtime_from_env,
-        sandbox_user,
-    )
+    from swf.sandbox import check_runtime, cleanup_orphans, runtime_from_env, sandbox_user
     from swf.settings import Settings
-    from swf.tokens import TokenCipher
 
+    portkey_startup_check(os.environ)  # m10a §1.8: before anything else
     sandbox_user()  # m9 §0.7: fail fast on a root host, before any Docker work
     agent = agent_overrides_from_env()
     settings = Settings.from_env()
@@ -908,7 +969,6 @@ def main() -> None:
     if runtime is not None:  # m8 §1.7: fail fast when docker lacks the runtime
         check_runtime(runtime)
     logger.info("sandbox runtime: %s", runtime or "docker default")
-    source = os.environ.get("SWF_LOCAL_SOURCE")
     workspaces_root = Path(os.environ.get("SWF_WORKSPACES_ROOT") or "./workspaces").resolve()
     egress = EgressConfig()
     ensure_egress(egress)
@@ -917,39 +977,24 @@ def main() -> None:
     )
     db = Database(settings.database_url, max_size=config.max_concurrent * 2 + 2)
     db.open()
+    try:
+        serve_until_signalled(
+            Worker(
+                build_runner_deps(settings, db, config, egress),
+                orphan_cleaner=partial(cleanup_orphans, egress=egress),
+            )
+        )
+    finally:
+        db.close()
 
-    def env_factory(req: EnvRequest) -> ToolEnv:
-        return open_task_sandbox(egress, req)
 
-    workspaces: WorkspaceProvider
-    publisher: PullRequestPublisher | None
-    if source:  # dev: copy a local directory, no PR
-        workspaces, publisher = LocalCopyWorkspace(Path(source), workspaces_root), None
-    else:
-        cipher = TokenCipher(settings.token_encryption_key)
-        tokens = db_token_source(db, cipher)
-        git = GitOps()
-        api = GitHubClient(base_url=settings.github_api_url)
-        workspaces = GitHubWorkspace(git, tokens, workspaces_root)
-        publisher = GitHubPublisher(git, api, tokens, on_retry=emit_publish_retry)
-    deps = RunnerDeps(
-        db=db,
-        workspaces=workspaces,
-        env_factory=env_factory,
-        model_factory=PhaseModel.from_env,
-        config=config,
-        publisher=publisher,
-        guard_factory=Guardrails.from_env,
-    )
-    worker = Worker(deps, orphan_cleaner=partial(cleanup_orphans, egress=egress))
+def serve_until_signalled(worker: Worker) -> None:
+    """`worker.serve` until SIGINT/SIGTERM (shared with the e2e launcher)."""
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(ValueError, OSError):
             signal.signal(sig, lambda *_: stop.set())
-    try:
-        worker.serve(stop)
-    finally:
-        db.close()
+    worker.serve(stop)
 
 
 if __name__ == "__main__":

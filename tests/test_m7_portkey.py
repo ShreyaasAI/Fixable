@@ -11,6 +11,7 @@ from m4_fakes import FakeCompletion, tool_response
 
 from swf.agent.model import PhaseModel, PhaseModelConfig
 from swf.guard import portkey_hook_verdicts
+from swf.settings import SettingsError
 
 KEY = "pk-test-secret-0123456789"
 SLUG = "pc-swf-m7-d1cf5c"
@@ -130,8 +131,8 @@ def test_the_config_slug_is_sent_as_a_header() -> None:
     assert sent["extra_headers"] == {"x-portkey-api-key": KEY, "x-portkey-config": SLUG}
 
 
-def test_without_the_variable_there_is_no_config_header() -> None:
-    model, fake = make(env={"PORTKEY_API_KEY": KEY})
+def test_with_off_there_is_no_config_header() -> None:  # m10a §1.8: the variable is required
+    model, fake = make(env={"PORTKEY_API_KEY": KEY, "SWF_PORTKEY_CONFIG": "off"})
     model.query(MESSAGES)
     (sent,) = fake.calls
     assert sent["extra_headers"] == {"x-portkey-api-key": KEY}
@@ -161,8 +162,8 @@ def test_the_config_defaults_to_off() -> None:
         "pg-abc",
     ],
 )
-def test_an_invalid_slug_is_a_value_error(slug: str) -> None:
-    with pytest.raises(ValueError):  # noqa: PT011
+def test_an_invalid_slug_is_a_settings_error(slug: str) -> None:  # m10a §1.8
+    with pytest.raises(SettingsError):
         PhaseModel.from_env({"PORTKEY_API_KEY": KEY, "SWF_PORTKEY_CONFIG": slug})
 
 
@@ -174,7 +175,7 @@ def test_a_valid_slug_is_accepted(slug: str) -> None:
 
 
 def test_the_key_is_not_in_the_error_for_a_bad_slug() -> None:
-    with pytest.raises(ValueError) as info:  # noqa: PT011
+    with pytest.raises(SettingsError) as info:
         PhaseModel.from_env({"PORTKEY_API_KEY": KEY, "SWF_PORTKEY_CONFIG": "nope"})
     assert KEY not in str(info.value)
 
@@ -214,7 +215,9 @@ def test_with_a_config_but_no_hook_results_the_value_is_none() -> None:
 
 
 def test_without_a_config_the_message_has_no_portkey_hooks_key() -> None:
-    model, _ = make(env={"PORTKEY_API_KEY": KEY}, response=with_hooks())
+    model, _ = make(
+        env={"PORTKEY_API_KEY": KEY, "SWF_PORTKEY_CONFIG": "off"}, response=with_hooks()
+    )
     message = model.query(MESSAGES)
     assert "portkey_hooks" not in message["extra"]
 
