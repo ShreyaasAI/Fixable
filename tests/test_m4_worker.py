@@ -1064,8 +1064,9 @@ def test_two_workers_run_four_tasks_each_exactly_once(fresh_db: Database, tmp_pa
     assert sorted(started) == sorted(str(i) for i in ids)  # each task started once, in one place
     assert tracker.peak <= 2  # the host limit holds across both workers
     assert tracker.active == 0
-    for task_id in ids:
-        assert task_row(fresh_db, task_id)["worker_id"] in {"worker-a", "worker-b"}
+    for task_id in ids:  # m10a §1.5: a finished task is released (no worker, no lease)
+        row = task_row(fresh_db, task_id)
+        assert (row["worker_id"], row["lease_expires_at"]) == (None, None)
 
 
 def test_serve_reconciles_leftovers_from_a_previous_run_first(

@@ -33,7 +33,7 @@ import socket
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -165,6 +165,7 @@ class WorkerConfig:
     heartbeat_seconds: int = 30
     abuse: AbuseLimits = field(default_factory=AbuseLimits)
     stop_poll_seconds: float = 5.0  # m8 §0.12: kill switch / cancel -> container gone in 30 s
+    sweep_seconds: float = 60.0  # m10a §1.5: remove workspaces of deleted tasks
 
     def __post_init__(self) -> None:
         if not _WORKER_ID_RE.fullmatch(self.worker_id):
@@ -314,7 +315,16 @@ class TaskRunner:
             self._fail(f"internal_error: {type(exc).__name__}")
         finally:
             self._cleanup()
+            self._release()
         return self._final_status()
+
+    def _release(self) -> None:
+        """m10a §1.5: hand the terminal task back (no worker), so the user can delete it."""
+        try:
+            with self.deps.db.backend() as conn:
+                store.release_task(conn, self.task.id, self.deps.config.worker_id)
+        except Exception:
+            logger.exception("releasing task %s failed", self.task.id)
 
     def _run(self) -> None:
         deps, task, channel = self.deps, self.task, self.channel
@@ -627,6 +637,24 @@ class TaskRunner:
 # --- the worker ----------------------------------------------------------------------------
 
 
+def orphan_workspaces(
+    names: Iterable[str], existing: set[uuid.UUID], running: set[uuid.UUID]
+) -> list[str]:
+    """Workspace folder names (canonical task UUIDs) whose task is gone and not running here.
+
+    Anything that is not a canonical lowercase UUID is never returned (m10a §1.5)."""
+    out: list[str] = []
+    for name in names:
+        try:
+            task_id = uuid.UUID(name)
+        except ValueError:
+            continue
+        if str(task_id) != name or task_id in existing or task_id in running:
+            continue
+        out.append(name)
+    return sorted(out)
+
+
 class Worker:
     def __init__(self, deps: RunnerDeps, *, orphan_cleaner: Callable[..., list[str]]) -> None:
         self.deps = deps
@@ -685,6 +713,30 @@ class Worker:
         for runner in runners:
             runner.kill()
         return stopped
+
+    def sweep_workspaces(self) -> list[str]:
+        """Remove `workspaces_root/<id>` folders of deleted tasks; returns the removed names."""
+        root = self.deps.config.workspaces_root.resolve()
+        if not root.is_dir():
+            return []
+        names = [p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink()]
+        ids: set[uuid.UUID] = set()
+        for name in names:
+            with contextlib.suppress(ValueError):
+                ids.add(uuid.UUID(name))
+        with self.deps.db.backend() as conn:
+            existing = store.existing_task_ids(conn, ids)
+        removed: list[str] = []
+        for name in orphan_workspaces(names, existing, set(self._running_ids())):
+            path = (root / name).resolve()
+            if path.parent != root:
+                continue
+            try:
+                shutil.rmtree(path)
+                removed.append(name)
+            except OSError:
+                logger.exception("removing workspace %s failed", path)
+        return removed
 
     def claim(self) -> store.Task | None:
         cfg = self.deps.config
@@ -765,9 +817,16 @@ class Worker:
         beat_stop = threading.Event()
         background = self._background(beat_stop)
         last_reconcile = time.monotonic()
+        last_sweep = float("-inf")
         try:
             while not stop.is_set():
                 self._reap_threads()
+                if time.monotonic() - last_sweep >= cfg.sweep_seconds:
+                    last_sweep = time.monotonic()
+                    try:
+                        self.sweep_workspaces()
+                    except Exception:
+                        logger.exception("workspace sweep failed")
                 if time.monotonic() - last_reconcile >= cfg.heartbeat_seconds:
                     last_reconcile = time.monotonic()
                     try:

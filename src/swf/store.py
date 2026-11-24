@@ -23,7 +23,7 @@ from typing import Any, Literal
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, field_validator
 
-from swf import states
+from swf import events, states
 from swf.db import Conn
 from swf.preflight import Capacity, Limits, PreflightResult, Reservation, fits
 from swf.settings import AbuseLimits
@@ -385,6 +385,26 @@ def _lock_owned_task(conn: Conn, user_id: uuid.UUID, task_id: uuid.UUID) -> str:
     return str(row["status"])
 
 
+def delete_task(conn: Conn, user_id: uuid.UUID, task_id: uuid.UUID) -> None:
+    """Delete a finished, released task and (FK cascade) its events, approvals, questions and
+    evidence; the audit row stays and quota usage is not refunded (m10a §1.5)."""
+    row = conn.execute(
+        "select status, worker_id, repo from public.tasks"
+        " where id = %s and user_id = %s for update",
+        [task_id, user_id],
+    ).fetchone()
+    if row is None:
+        raise NotFound
+    if row["status"] not in TERMINAL_STATUSES:
+        raise Conflict("task_not_finished")
+    if row["worker_id"] is not None:
+        raise Conflict("task_busy")
+    conn.execute("delete from public.tasks where id = %s", [task_id])
+    _audit(
+        conn, user_id, "task.delete", str(task_id), {"repo": row["repo"], "status": row["status"]}
+    )
+
+
 def cancel_task(conn: Conn, user_id: uuid.UUID, task_id: uuid.UUID) -> Task:
     status = _lock_owned_task(conn, user_id, task_id)
     try:
@@ -519,7 +539,10 @@ def answer_question(
 
 
 def append_event(conn: Conn, task_id: uuid.UUID, type: str, payload: dict[str, Any]) -> Event:
-    """Append an event with the task's next seq (0-based, gap-free; the row lock serialises)."""
+    """Append an event with the task's next seq (0-based, gap-free; the row lock serialises).
+
+    `ValueError` for a type not in `swf.events.EVENT_TYPES` (nothing is written)."""
+    events.check_type(type)
     row = conn.execute(
         "update public.tasks set event_seq = event_seq + 1 where id = %s"
         " returning event_seq - 1 as seq",
@@ -820,7 +843,35 @@ def interrupt_orphans(
             conn, r["id"], "interrupted", error="worker_restarted" if own else "lease_expired"
         )
         reaped.append((r["id"], previous))
+    if reaped:  # m10a §1.5: an interrupted task has no worker, so it can be deleted
+        conn.execute(
+            "update public.tasks set worker_id = null, lease_expires_at = null where id = any(%s)",
+            [[task_id for task_id, _ in reaped]],
+        )
+    # A terminal task whose worker died before `release_task` would stay `task_busy` forever.
+    conn.execute(
+        "update public.tasks set worker_id = null, lease_expires_at = null"
+        " where status = any(%s) and worker_id is not null"
+        " and (lease_expires_at is null or lease_expires_at < now())",
+        [list(TERMINAL_STATUSES)],
+    )
     return reaped
+
+
+def release_task(conn: Conn, task_id: uuid.UUID, worker_id: str) -> None:
+    """The runner is done with its terminal task: clear the worker and lease (m10a §1.5)."""
+    conn.execute(
+        "update public.tasks set worker_id = null, lease_expires_at = null"
+        " where id = %s and worker_id = %s and status = any(%s)",
+        [task_id, worker_id, list(TERMINAL_STATUSES)],
+    )
+
+
+def existing_task_ids(conn: Conn, ids: Collection[uuid.UUID]) -> set[uuid.UUID]:
+    if not ids:
+        return set()
+    rows = conn.execute("select id from public.tasks where id = any(%s)", [list(ids)]).fetchall()
+    return {r["id"] for r in rows}
 
 
 def active_task_ids(conn: Conn) -> list[str]:
@@ -834,6 +885,49 @@ def active_task_ids(conn: Conn) -> list[str]:
 # --- abuse controls (M8, backend) ---------------------------------------------------------
 
 
+class QuotaLimits(BaseModel):
+    """The quota part of `AbuseLimits`, as shown to the user (m10a §1.3)."""
+
+    tasks_per_day: int
+    cost_per_day_usd: float
+    cost_per_task_usd: float
+    concurrent_tasks: int
+
+    @classmethod
+    def of(cls, limits: AbuseLimits) -> QuotaLimits:
+        return cls(
+            tasks_per_day=limits.tasks_per_day,
+            cost_per_day_usd=limits.cost_per_day_usd,
+            cost_per_task_usd=limits.cost_per_task_usd,
+            concurrent_tasks=limits.concurrent_tasks,
+        )
+
+
+class Remaining(BaseModel):
+    tasks_today: int
+    cost_today_usd: float
+    concurrent_tasks: int
+
+
+def remaining(usage: Usage, open_tasks: int, limits: AbuseLimits) -> Remaining:
+    """What is left of each quota, floored at 0. `check_quota` refuses on the first that is 0."""
+    return Remaining(
+        tasks_today=max(0, limits.tasks_per_day - usage.tasks),
+        cost_today_usd=max(0.0, limits.cost_per_day_usd - usage.cost_usd),
+        concurrent_tasks=max(0, limits.concurrent_tasks - open_tasks),
+    )
+
+
+def open_task_count(conn: Conn, user_id: uuid.UUID) -> int:
+    """The user's non-terminal tasks (queued, running, waiting)."""
+    row = conn.execute(
+        "select count(*) as n from public.tasks where user_id = %s and status <> all(%s)",
+        [user_id, list(TERMINAL_STATUSES)],
+    ).fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
 def check_quota(conn: Conn, user_id: uuid.UUID, day: date, limits: AbuseLimits) -> str | None:
     """First quota the user has reached on `day`, or None (m8-contract §0.8, §0.9).
 
@@ -841,17 +935,12 @@ def check_quota(conn: Conn, user_id: uuid.UUID, day: date, limits: AbuseLimits) 
     transaction cannot race a parallel create.
     """
     conn.execute("select pg_advisory_xact_lock(hashtext('swf.quota:' || %s::text))", [user_id])
-    usage = get_usage(conn, user_id, day)
-    if usage.tasks >= limits.tasks_per_day:
+    left = remaining(get_usage(conn, user_id, day), open_task_count(conn, user_id), limits)
+    if left.tasks_today <= 0:
         return "quota_tasks_per_day"
-    if usage.cost_usd >= limits.cost_per_day_usd:
+    if left.cost_today_usd <= 0:
         return "quota_cost_per_day"
-    row = conn.execute(
-        "select count(*) as n from public.tasks where user_id = %s and status <> all(%s)",
-        [user_id, list(TERMINAL_STATUSES)],
-    ).fetchone()
-    assert row is not None
-    return "quota_concurrent_tasks" if row["n"] >= limits.concurrent_tasks else None
+    return "quota_concurrent_tasks" if left.concurrent_tasks <= 0 else None
 
 
 def tasks_paused(conn: Conn) -> bool:
@@ -861,6 +950,13 @@ def tasks_paused(conn: Conn) -> bool:
     if row is None:
         raise RuntimeError("system_state row missing")
     return bool(row["tasks_paused"])
+
+
+def _scope_target(user_id: uuid.UUID | None) -> tuple[Literal["user", "global"], str]:
+    """Audit scope and target of an admin kill/resume."""
+    if user_id is None:
+        return "global", "global"
+    return "user", str(user_id)
 
 
 def admin_kill(conn: Conn, admin_id: uuid.UUID, user_id: uuid.UUID | None) -> list[uuid.UUID]:
@@ -897,8 +993,7 @@ def admin_kill(conn: Conn, admin_id: uuid.UUID, user_id: uuid.UUID | None) -> li
         _expire_pending(conn, r["id"])
         transition_task(conn, r["id"], "cancelled", error="admin_kill")
         ids.append(r["id"])
-    scope = "global" if user_id is None else "user"
-    target = "global" if user_id is None else str(user_id)
+    scope, target = _scope_target(user_id)
     _audit(conn, admin_id, "admin.kill", target, {"scope": scope, "cancelled": len(ids)})
     return ids
 
@@ -924,9 +1019,61 @@ def admin_resume(conn: Conn, admin_id: uuid.UUID, user_id: uuid.UUID | None) -> 
             is None
         ):
             raise RuntimeError("system_state row missing")
-    scope = "global" if user_id is None else "user"
-    target = "global" if user_id is None else str(user_id)
+    scope, target = _scope_target(user_id)
     _audit(conn, admin_id, "admin.resume", target, {"scope": scope})
+
+
+class AdminUser(BaseModel):
+    user_id: uuid.UUID
+    github_login: str | None
+    is_admin: bool
+    disabled: bool
+    open_tasks: int
+
+
+class SystemStatus(BaseModel):
+    tasks_paused: bool
+    updated_at: datetime | None
+    updated_by: uuid.UUID | None
+    queued: int
+    active: int
+    users: list[AdminUser]
+
+
+def system_status(conn: Conn, *, user_limit: int = 100) -> SystemStatus:
+    """Admin read model (m10a §1.4): plain selects, no locks, no writes.
+
+    Users: disabled first, then by their latest task (newest first; users with no task last).
+    """
+    state = conn.execute(
+        "select tasks_paused, updated_at, updated_by from public.system_state"
+    ).fetchone()
+    if state is None:
+        raise RuntimeError("system_state row missing")
+    counts = conn.execute(
+        "select count(*) filter (where status = 'queued') as queued,"
+        " count(*) filter (where status <> 'queued') as active"
+        " from public.tasks where status <> all(%s)",
+        [list(TERMINAL_STATUSES)],
+    ).fetchone()
+    assert counts is not None
+    users = conn.execute(
+        "select p.user_id, p.github_login, p.is_admin, p.disabled,"
+        " count(t.id) filter (where t.status <> all(%s)) as open_tasks"
+        " from public.profiles p left join public.tasks t on t.user_id = p.user_id"
+        " group by p.user_id"
+        " order by p.disabled desc, max(t.created_seq) desc nulls last, p.user_id"
+        " limit %s",
+        [list(TERMINAL_STATUSES), user_limit],
+    ).fetchall()
+    return SystemStatus(
+        tasks_paused=bool(state["tasks_paused"]),
+        updated_at=state["updated_at"],
+        updated_by=state["updated_by"],
+        queued=int(counts["queued"]),
+        active=int(counts["active"]),
+        users=[AdminUser.model_validate(u) for u in users],
+    )
 
 
 def stopped_task_ids(conn: Conn, task_ids: Collection[uuid.UUID]) -> list[uuid.UUID]:
