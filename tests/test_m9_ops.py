@@ -18,7 +18,7 @@ def _workflow() -> str:
 
 
 def test_ci_triggers_on_feature_m8_and_m9() -> None:
-    assert "branches: [feature/m8, feature/m9]" in _workflow()
+    assert "branches: [feature/m8, feature/m9, feature/m10]" in _workflow()
 
 
 def test_ci_runs_pytest_as_the_runner_user_not_uid_1000() -> None:

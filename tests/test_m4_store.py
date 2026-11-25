@@ -127,7 +127,7 @@ def test_events_are_numbered_from_zero_without_gaps_under_concurrent_writers(
             barrier.wait()
             for n in range(50):
                 with fresh_db.backend() as conn:
-                    store.append_event(conn, task.id, "note", {"who": name, "n": n})
+                    store.append_event(conn, task.id, "message", {"who": name, "n": n})
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -139,7 +139,7 @@ def test_events_are_numbered_from_zero_without_gaps_under_concurrent_writers(
     assert not errors
     events = events_of(fresh_db, user, task, limit=1000)
     assert [e.seq for e in events] == list(range(101))  # the creation event plus 2 x 50
-    notes = [e.payload for e in events if e.type == "note"]
+    notes = [e.payload for e in events if e.type == "message"]
     assert len({(p["who"], p["n"]) for p in notes}) == 100
     for who in ("a", "b"):
         assert [p["n"] for p in notes if p["who"] == who] == list(range(50))  # in order per writer
@@ -148,15 +148,15 @@ def test_events_are_numbered_from_zero_without_gaps_under_concurrent_writers(
 def test_append_event_returns_the_event(fresh_db: Database) -> None:
     _, task = new_task(fresh_db)
     with fresh_db.backend() as conn:
-        event = store.append_event(conn, task.id, "note", {"k": "v"})
-    assert (event.seq, event.type, event.payload) == (1, "note", {"k": "v"})
+        event = store.append_event(conn, task.id, "message", {"k": "v"})
+    assert (event.seq, event.type, event.payload) == (1, "message", {"k": "v"})
 
 
 def test_list_events_orders_resumes_and_limits(fresh_db: Database) -> None:
     user, task = new_task(fresh_db)
     with fresh_db.backend() as conn:
         for n in range(5):
-            store.append_event(conn, task.id, "note", {"n": n})
+            store.append_event(conn, task.id, "message", {"n": n})
     all_events = events_of(fresh_db, user, task)
     assert [e.seq for e in all_events] == [0, 1, 2, 3, 4, 5]
     assert [e.seq for e in events_of(fresh_db, user, task, after_seq=3)] == [4, 5]

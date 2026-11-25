@@ -1,0 +1,74 @@
+# M10 e2e in CI (m10b §0.10): Playwright Chromium against the real API, worker and Docker
+# sandboxes, with the fake GitHub, registry and model launchers (m10a §4.2), plus the web build
+# tests. Runs on the private CI repo only; needs no secrets.
+name: m10-e2e
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/m10]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m10-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    if: github.repository == 'ShreyaasAI/swf-ci'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install web dependencies and Chromium
+        run: |
+          set -euo pipefail
+          (cd web && npm ci)
+          uv run --locked playwright install --with-deps chromium
+          mkdir -p "$RUNNER_TEMP/pkgcache"
+          echo "SWF_PKGCACHE_DIR=$RUNNER_TEMP/pkgcache" >> "$GITHUB_ENV"
+          echo "JUNIT=$RUNNER_TEMP/m10-e2e-junit.xml" >> "$GITHUB_ENV"
+
+      - name: E2E and web build tests
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          env PYTHONDONTWRITEBYTECODE=1 uv run --locked pytest -o addopts="" -q -rs \
+            -m e2e tests/e2e tests/test_m10_web_build.py --junitxml="$JUNIT"
+
+      - name: Nothing was skipped
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - "$JUNIT" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().iter("testsuite")
+          totals = [(int(s.get("tests", 0)), int(s.get("skipped", 0))) for s in suites]
+          tests, skipped = sum(t for t, _ in totals), sum(s for _, s in totals)
+          print(f"tests={tests} skipped={skipped}")
+          sys.exit(0 if tests > 0 and skipped == 0 else 1)
+          PY
+
+      - name: Upload e2e logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m10-e2e-logs
+          path: /tmp/pytest-of-*/**/logs/*.log
+          if-no-files-found: ignore

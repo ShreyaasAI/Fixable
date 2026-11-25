@@ -117,5 +117,5 @@ def test_ci_workflow_uses_no_secrets_and_never_pushes() -> None:
 def test_ci_workflow_triggers_only_on_dispatch_and_feature_branches() -> None:
     text = _workflow()
     assert "workflow_dispatch:" in text
-    assert "branches: [feature/m8, feature/m9]" in text  # m9 T9
+    assert "branches: [feature/m8, feature/m9, feature/m10]" in text  # m9 T9
     assert "pull_request" not in text and "schedule:" not in text

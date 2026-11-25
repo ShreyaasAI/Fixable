@@ -28,7 +28,8 @@ M8 abuse controls (m8-contract §1.6):
 - `POST /v1/admin/kill` and `POST /v1/admin/resume` (admins only) disable or re-enable one
   user, or pause or resume all tasks; a kill cancels every non-terminal task in scope.
 
-Deferred: task delete + workspace (M6).
+M10a: `DELETE /v1/tasks/{id}` removes a terminal, released task; the worker sweeps its
+workspace folder.
 """
 
 import json
@@ -36,23 +37,27 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
+import anyio.to_thread
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from swf import store
+from swf.api.streams import StreamSlots
 from swf.auth import AuthError, JwtVerifier, Principal
 from swf.db import Conn, Database
 from swf.github import GitHubAuthError, GitHubClient, GitHubError
 from swf.preflight import (
     BranchNotFound,
+    Capacity,
     PreflightResult,
     PreflightService,
     RepoNotFound,
@@ -84,6 +89,7 @@ class AppDeps:
     sse_keepalive_seconds: float = 15.0
     abuse: AbuseLimits = field(default_factory=AbuseLimits)
     monotonic: Callable[[], float] = time.monotonic
+    cors_origins: tuple[str, ...] = ()  # m10b §0.3; empty: no CORS headers (localhost proxy)
 
     def today(self) -> date:
         return self.clock().astimezone(UTC).date()
@@ -106,11 +112,9 @@ class _Body(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class TaskCreate(_Body):
+class RepoRef(_Body):
     repo: str
     base_branch: str = Field(min_length=1, max_length=255)
-    description: str = Field(min_length=1, max_length=10_000)
-    failing_test: str | None = Field(default=None, min_length=1, max_length=500)
 
     @field_validator("repo")
     @classmethod
@@ -137,6 +141,11 @@ class TaskCreate(_Body):
         return v
 
 
+class TaskCreate(RepoRef):
+    description: str = Field(min_length=1, max_length=10_000)
+    failing_test: str | None = Field(default=None, min_length=1, max_length=500)
+
+
 class TaskCreated(BaseModel):
     task: store.Task
     preflight: PreflightResult
@@ -161,6 +170,8 @@ class Me(BaseModel):
     is_admin: bool
     github_linked: bool
     usage_today: store.Usage
+    limits: store.QuotaLimits
+    remaining: store.Remaining
 
 
 class EvidenceOut(BaseModel):
@@ -205,6 +216,20 @@ def create_app(
     create_limiter = RateLimiter(
         per_minute=abuse.create_per_minute, burst=abuse.create_burst, clock=deps.monotonic
     )
+    preflight_limiter = RateLimiter(
+        per_minute=abuse.preflight_per_minute, burst=abuse.preflight_burst, clock=deps.monotonic
+    )
+    stream_slots = StreamSlots(per_user=abuse.sse_streams_per_user, total=abuse.sse_streams_total)
+    if deps.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(deps.cors_origins),
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "Last-Event-ID"],
+            expose_headers=["Retry-After"],
+            allow_credentials=False,
+            max_age=600,
+        )
 
     def _limit(limiter: RateLimiter, user_id: uuid.UUID) -> None:
         wait = limiter.hit(user_id)
@@ -261,6 +286,34 @@ def create_app(
 
     User = Annotated[CurrentUser, Depends(current_user)]
 
+    def _github_token(user: CurrentUser) -> str:
+        """The decrypted GitHub token; 409 `github_token_missing` / `github_token_invalid`."""
+        with deps.db.backend() as conn:
+            blob = store.get_encrypted_github_token(conn, user.id)
+        if blob is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_missing")
+        try:
+            return deps.cipher.decrypt(blob)
+        except TokenDecryptError:
+            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_invalid") from None
+
+    def _preflight(token: str, ref: RepoRef, capacity: Capacity) -> PreflightResult:
+        """Pre-flight over GitHub with the API's error mapping (m10a §1.2)."""
+        try:
+            return deps.preflight.check(token, ref.repo, ref.base_branch, capacity)
+        except RepoNotFound:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "repo_not_found") from None
+        except BranchNotFound:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "branch_not_found") from None
+        except RepoNotWritable:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "repo_not_writable"
+            ) from None
+        except GitHubAuthError:
+            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_invalid") from None
+        except GitHubError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "github_unavailable") from None
+
     def admin_user(user: User) -> CurrentUser:
         if not user.profile.is_admin:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "admin_only")
@@ -276,6 +329,7 @@ def create_app(
     def me(user: User) -> Me:
         with deps.db.as_user(user.principal.claims) as conn:
             usage = store.get_usage(conn, user.id, deps.today())
+            open_tasks = store.open_task_count(conn, user.id)
         with deps.db.backend() as conn:
             linked = store.get_encrypted_github_token(conn, user.id) is not None
         return Me(
@@ -284,6 +338,8 @@ def create_app(
             is_admin=user.profile.is_admin,
             github_linked=linked,
             usage_today=usage,
+            limits=store.QuotaLimits.of(abuse),
+            remaining=store.remaining(usage, open_tasks, abuse),
         )
 
     @app.post("/v1/me/github-token", status_code=status.HTTP_204_NO_CONTENT)
@@ -308,13 +364,10 @@ def create_app(
 
     @app.get("/v1/repos")
     def repos(user: User) -> list[RepoOut]:
-        with deps.db.backend() as conn:
-            blob = store.get_encrypted_github_token(conn, user.id)
-        if blob is None:
-            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_missing")
+        token = _github_token(user)
         try:
-            found = deps.github.list_repos(deps.cipher.decrypt(blob))
-        except (GitHubAuthError, TokenDecryptError):
+            found = deps.github.list_repos(token)
+        except GitHubAuthError:
             raise HTTPException(status.HTTP_409_CONFLICT, "github_token_invalid") from None
         except GitHubError:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "github_unavailable") from None
@@ -328,34 +381,26 @@ def create_app(
             for r in found
         ]
 
+    def _checked_preflight(user: CurrentUser, ref: RepoRef) -> PreflightResult:
+        """Admission pre-check (so a paused service or an over-quota user causes no GitHub call),
+        then pre-flight. Shared by `POST /v1/preflight` and `POST /v1/tasks`."""
+        with deps.db.backend() as conn:
+            _admission(conn, user.id)
+        token = _github_token(user)
+        with deps.db.backend() as conn:
+            capacity = store.capacity_snapshot(conn)
+        return _preflight(token, ref, capacity)
+
+    @app.post("/v1/preflight")
+    def preflight(user: User, body: RepoRef) -> PreflightResult:
+        """Dry run: the estimate a create would get; no task, no audit row (m10a §1.2)."""
+        _limit(preflight_limiter, user.id)  # m10b §0.5: each call costs GitHub/registry requests
+        return _checked_preflight(user, body)
+
     @app.post("/v1/tasks", status_code=status.HTTP_201_CREATED)
     def create_task(user: User, body: TaskCreate) -> TaskCreated:
         _limit(create_limiter, user.id)
-        with deps.db.backend() as conn:
-            # Pre-check, so a paused service or an over-quota user causes no GitHub call.
-            _admission(conn, user.id)
-            blob = store.get_encrypted_github_token(conn, user.id)
-            capacity = store.capacity_snapshot(conn)
-        if blob is None:
-            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_missing")
-        try:
-            token = deps.cipher.decrypt(blob)
-        except TokenDecryptError:
-            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_invalid") from None
-        try:
-            result = deps.preflight.check(token, body.repo, body.base_branch, capacity)
-        except RepoNotFound:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "repo_not_found") from None
-        except BranchNotFound:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "branch_not_found") from None
-        except RepoNotWritable:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT, "repo_not_writable"
-            ) from None
-        except GitHubAuthError:
-            raise HTTPException(status.HTTP_409_CONFLICT, "github_token_invalid") from None
-        except GitHubError:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "github_unavailable") from None
+        result = _checked_preflight(user, body)
         rejected = result.decision == "reject"
         with deps.db.backend() as conn:
             # Re-check under locks; raising here rolls the transaction back. The profile share
@@ -423,17 +468,34 @@ def create_app(
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid_last_event_id") from None
         claims = user.principal.claims
         user_id = user.id
+        slot = stream_slots.acquire(user_id)
+        if slot is None:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS, "too_many_streams", headers={"Retry-After": "5"}
+            )
 
-        def stream() -> Iterator[str]:
+        def poll(after: int) -> tuple[dict[str, Any] | None, list[store.Event]]:
+            with deps.db.as_user(claims) as conn:
+                row = conn.execute(
+                    "select status, event_seq from public.tasks where id = %s and user_id = %s",
+                    [task_id, user_id],
+                ).fetchone()
+                return row, store.list_events(conn, user_id, task_id, after_seq=after)
+
+        async def stream() -> AsyncIterator[str]:
+            # m10b review #1: async, so an open stream holds a worker thread only while it polls
+            # the database, not while it waits; a client that leaves cancels the wait at once.
+            try:
+                async for chunk in _stream():
+                    yield chunk
+            finally:
+                slot.release()
+
+        async def _stream() -> AsyncIterator[str]:
             sent = cursor
             last_output = time.monotonic()
             while True:
-                with deps.db.as_user(claims) as conn:
-                    row = conn.execute(
-                        "select status, event_seq from public.tasks where id = %s and user_id = %s",
-                        [task_id, user_id],
-                    ).fetchone()
-                    batch = store.list_events(conn, user_id, task_id, after_seq=sent)
+                row, batch = await anyio.to_thread.run_sync(poll, sent)
                 if row is None:
                     return
                 for event in batch:
@@ -451,10 +513,12 @@ def create_app(
                 if time.monotonic() - last_output >= deps.sse_keepalive_seconds:
                     yield ": ping\n\n"
                     last_output = time.monotonic()
-                time.sleep(deps.sse_poll_seconds)
+                await anyio.sleep(deps.sse_poll_seconds)
 
+        body = stream()
+        slot.release_with(body)  # a response dropped before it ever ran frees its slot too
         return StreamingResponse(
-            stream(),
+            body,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
@@ -475,10 +539,21 @@ def create_app(
         with deps.db.backend() as conn:
             return store.answer_question(conn, user.id, task_id, question_id, answer=body.answer)
 
+    @app.delete("/v1/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_task(user: User, task_id: uuid.UUID) -> Response:
+        with deps.db.backend() as conn:
+            store.delete_task(conn, user.id, task_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @app.post("/v1/tasks/{task_id}/cancel")
     def cancel(user: User, task_id: uuid.UUID) -> store.Task:
         with deps.db.backend() as conn:
             return store.cancel_task(conn, user.id, task_id)
+
+    @app.get("/v1/admin/status")
+    def admin_status(_admin: Admin) -> store.SystemStatus:
+        with deps.db.backend() as conn:
+            return store.system_status(conn)
 
     @app.post("/v1/admin/kill")
     def admin_kill(admin: Admin, body: KillIn) -> KillOut:

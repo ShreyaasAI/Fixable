@@ -18,15 +18,21 @@ from swf.db import Database
 from swf.github import GitHubClient
 from swf.images import RegistryClient
 from swf.preflight import PreflightService
-from swf.settings import AbuseLimits, Settings
+from swf.settings import AbuseLimits, Deployment, Settings
 from swf.tokens import TokenCipher
 
 
-def create_app_from_env() -> FastAPI:
-    settings = Settings.from_env()
-    db = Database(settings.database_url)
-    github = GitHubClient(base_url=settings.github_api_url)
-    deps = AppDeps(
+def build_app_deps(
+    settings: Settings,
+    db: Database,
+    *,
+    github: GitHubClient | None = None,
+    registry: RegistryClient | None = None,
+) -> AppDeps:
+    """The production API wiring (m10a §1.7); the e2e launcher injects fake GitHub/registry
+    transports. Opens nothing."""
+    gh = GitHubClient(base_url=settings.github_api_url) if github is None else github
+    return AppDeps(
         db=db,
         verifier=JwtVerifier(
             issuer=settings.jwt_issuer,
@@ -34,10 +40,23 @@ def create_app_from_env() -> FastAPI:
             hs256_secret=settings.supabase_jwt_secret,
         ),
         cipher=TokenCipher(settings.token_encryption_key),
-        github=github,
-        preflight=PreflightService(github=github, registry=RegistryClient()),
+        github=gh,
+        preflight=PreflightService(
+            github=gh, registry=RegistryClient() if registry is None else registry
+        ),
         abuse=AbuseLimits.from_env(),
+        cors_origins=Deployment.from_env().cors_origins,
     )
+
+
+def create_app_from_env() -> FastAPI:
+    settings = Settings.from_env()
+    db = Database(settings.database_url)
+    return create_app_with_lifespan(build_app_deps(settings, db), db)
+
+
+def create_app_with_lifespan(deps: AppDeps, db: Database) -> FastAPI:
+    """`create_app` with a lifespan that opens and closes `db`."""
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:

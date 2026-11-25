@@ -1,7 +1,7 @@
 # Web Coding Agent — Implementation Plan
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
-- **Last updated:** 2026-11-23
+- **Last updated:** 2026-11-25
 - **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 and M6 approved, merged to `main` (`1235cdc`); M7 and M8 approved, merged to `main` (M8: `4f982a4`); M9 built and evaluated on `feature/m9`, wall-ratio miss accepted (user, 2026-11-23), M9 approved (user, 2026-11-23), merged to `main` (`955818b`)
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
@@ -180,8 +180,8 @@ Token backend-only + encrypted · clean-clone PR, hooks off · branch computed s
 ## 16. Rollout
 
 1. Local dev (Windows + Docker Desktop) through M7.
-2. Supabase Free project from M8. M9 evaluation ran on the local PC (2026-11-23); the public-deploy host is still open (M10) and must be $0 with no credit card (Oracle dropped 2026-11-22).
-3. Open beta after M10 with quotas on. A free-tier keep-alive (scheduled health ping) prevents Supabase pausing.
+2. Supabase Free project from M8. M9 evaluation ran on the local PC (2026-11-23). Public deploy [D, M10b, 2026-11-25]: web app on Vercel; API and worker on the PC behind a Cloudflare quick tunnel; worker on gVisor in WSL2 Ubuntu (m10b-contract §0, m10-runbook §6). $0, no credit card.
+3. Open beta after M10 with quotas on. A free-tier keep-alive (`.github/workflows/supabase-keepalive.yml`, every 3 days) prevents Supabase pausing.
 
 ## 17. Non-goals (MVP)
 
@@ -285,14 +285,37 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
 - **Result (2026-11-23, live run `run-20261123b`, git sha 1562d27):** host local PC (16 CPU, ~6.2 GB Docker Desktop, runc), model `@glm-4-7-flash/glm-4.7-flash`, repo `ShreyaasAI/swf-pr-sandbox`, 10 seeds. Controls 10/10 (pristine target fails, reference resolves). Single pass 10/10 completed and resolved, median wall 90.3 s. Concurrent pass (2 users) 9/10 resolved, median wall 114.1 s. **Wall ratio 1.26 vs DoD <= 1.25: not met (miss by 0.01).** Resolve drop 10 points vs <= 10: met. Cost $0.00 (<= $1): met. 463 calls, 19 PRs (cap 22), 2763.6 s. Cause of the miss: concurrent seed 01 failed `retries_exhausted` after 473 s (z-ai HTTP 429 three times in verify after its tests passed). A provider 429 is not an infra failure (m9 §0.13), so no re-run. Completed-only ratio 1.17. Concurrent pass had 21 model-step retries vs 0 single: the provider rate limit, not the host, is the bottleneck. First live run `run-20261123a` aborted (2 tasks, 0 PRs): glm-4.7-flash wrote `submit_plan.steps` as a bare numbered list (invalid JSON); fixed in 1562d27 (`steps` is a string on the wire, m9 §13 A2). **User decision 2026-11-23: "Accept, close M9"**: the DoD miss is accepted as recorded, no second trial. PRs #2-#20 closed (not merged) and their branches deleted; `seed/*` branches await final approval. Table: `m9-results.md`. Portkey usage before/after: to be filled by the user. Haiku retest: 2138 passed, 16 skipped (platform/env only), 0 failed at `1562d27` (2026-11-23); ruff, ruff format, mypy clean.
 - **Decisions [D, 2026-11-23]:** (1) accept the 1.26 wall ratio; (2) package cache is our own pull-through server (`swf.pkgcache`), not Squid (m9 §0.6); (3) Linux sandbox user is the host uid:gid via `sandbox_user()` (1000:1000 on Windows); (4) product default model unchanged: switching to glm for all phases needed the DoD to pass, and it did not (m9 §6). Follow-up before a public deploy: handle provider 429 under concurrency (backoff or provider capacity).
 
-### M10 — Minimal web UI
+### M10 — Minimal web UI (localhost), then deploy readiness
 - [ ] Every spec §3 action works in the browser (manual checklist + screenshots)
 - **DoD:** checklist complete.
+- **Design [D, user, 2026-11-24, grill rounds 1-3]:**
+  - Increments: **M10-0** architecture review (`codebase-design`, scoped to what the UI touches; ranked list, user approves items) → **M10a** localhost UI → **M10b** deploy readiness (own grill: API host/tunnel, gVisor on the PC, CORS allowlist, Vercel env, provider 429) → user deploys the Fixable repo to Vercel. Each increment closes with `finishing-a-development-branch` after approval.
+  - Hosting: Vercel serves the static frontend only; API + worker stay on the PC; API base URL from env.
+  - Frontend: Vite + React + TypeScript in `web/` (Vercel Root Directory = `web/`); deps minimal (`@supabase/supabase-js` only); hash routes; one CSS file; npm with lockfile; UI design via the `ui-ux-pro-max` skill. Localhost: Vite proxy `/v1` → `127.0.0.1:8000` (no CORS until M10b).
+  - Sign-in: Supabase GitHub OAuth, scope `repo` (stated on the sign-in screen); the browser re-POSTs `provider_token` to `/v1/me/github-token` after each sign-in. User configures the GitHub OAuth App and the Supabase provider from a runbook. Manual runs use the Supabase Free project.
+  - API additions (M10a): `POST /v1/preflight` (estimate, no task created; UI shows it, then Start); `limits` in `GET /v1/me`; `DELETE /v1/tasks/{id}` (terminal tasks only, workspace removed, audit kept); `GET /v1/admin/status`; Portkey saved guardrails on by default (secret regex; missing result → flag).
+  - UI: sign-in + quota, repo picker (base branch prefilled from `default_branch`), create + pre-flight, task list, live timeline (status, messages, tool calls with args, outputs collapsed > ~40 lines, exit codes; noisy events behind a toggle; fetch-streaming SSE with `Last-Event-ID` resume), approval/question cards rebuilt from the event replay, evidence, PR link, admin page (global pause/resume, per-user kill/resume, current state; admins only).
+  - Tests: written first. Python Playwright e2e (~10, one per §3 action + admin) on a real API, local Postgres and Docker sandboxes, with a scripted model via a test-only worker launcher, a fake GitHub API and a fake PR publisher; `VITE_AUTH_MODE=dev` token sign-in in dev builds only (a test checks production builds lack it); Chromium installed once. Plus the manual checklist with screenshots and one live smoke PR on `swf-pr-sandbox`. E2E in CI → M10b.
+  - Out of M10a: branch dropdown, public deploy/tunnel, gVisor on the PC, CORS allowlist, payments, quota editing.
+- **M10-0 refactors [D, user, 2026-11-24: "Approve all 6"]** (detail in the m10a contract):
+  1. one app helper for token lookup and pre-flight, used by `POST /v1/tasks` and `POST /v1/preflight`;
+  2. split `worker.main()` into a reusable `build_runner_deps(...)` plus `main()` (the e2e launcher swaps model and publisher);
+  3. `swf/events.py` with the event-type list and its noise subset; `emit` rejects unknown types; the UI's TS list is checked against it;
+  4. read-only `store.system_status()` for `/v1/admin/status`; one scope/target helper for kill/resume;
+  5. `store.delete_task` (terminal only, FK cascade, audit) plus a worker sweep of workspace folders with no task;
+  6. `remaining(...)` quota function next to `check_quota`, used by `/v1/me`.
+  - Rejected: splitting `app.py` into routers, moving the SSE generator, typed per-event payloads, `github.py` changes. Noted for M10b: each SSE stream holds a threadpool thread. Also for M10b: `POST /v1/preflight` has only the per-user API rate limit, and each call costs GitHub and registry requests; consider a preflight-specific limit or cache.
+- **M10b deploy readiness [D, planner under user delegation, 2026-11-25: "Do everything and don't ask me anything... complete the whole project. Just leave the UI."]** (detail: `m10b-contract.md`):
+  - `SWF_PUBLIC=1` + `SWF_CORS_ORIGINS` exact-origin allowlist; the worker refuses public mode without gVisor (`runsc`) or Portkey guardrails.
+  - Provider HTTP 429: own wait schedule (10-60 s, `Retry-After` up to 120 s), no ordinary attempt used.
+  - Per-user pre-flight bucket (10/min, burst 5); open SSE streams capped (4 per user, 40 in all).
+  - `python -m swf.deploycheck`; `web/vercel.json`; Supabase keep-alive workflow; e2e in CI on `swf-ci`.
+  - Left to the user: the manual UI checklist + live smoke PR (next session), the Vercel deploy, gVisor in WSL2, the tunnel, the keep-alive secrets.
 - **Added [D, user, 2026-11-23]:** turn Portkey saved guardrails on by default (`SWF_PORTKEY_CONFIG`, with production output checks such as a secret regex), in addition to the in-process guard (m7 §12, m9-results notes).
 
 ## 19. Open questions [Q]
 
 1. ~~Idle-approval timeout default (proposed 24 h).~~ — resolved: 24 h [D, 2026-11-20].
-2. SSE (default) vs Supabase Realtime for live updates.
+2. ~~SSE (default) vs Supabase Realtime for live updates.~~ — resolved: SSE over fetch streaming with `Last-Event-ID` resume [D, M10a, 2026-11-24].
 3. ~~Portkey free-plan guardrail availability (else in-process output checks).~~ — resolved 2026-11-21 [D]: free plan supports saved regex and JSON-schema output guardrails (`pg-swf-m7-c8f3fc`, config `pc-swf-m7-d1cf5c`); used opt-in via `SWF_PORTKEY_CONFIG`; in-process output guard stays mandatory (`m7-contract.md` §13 A1).
 4. ~~Language mix of seeded repos~~ — resolved: Python only [D].

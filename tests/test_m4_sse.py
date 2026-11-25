@@ -102,7 +102,7 @@ def seeded(db: Database, notes: int = 2) -> tuple[FakeUser, store.Task]:
     task = queued_task(db, user=user)
     with db.backend() as conn:
         for n in range(notes):
-            store.append_event(conn, task.id, "note", {"n": n})
+            store.append_event(conn, task.id, "message", {"n": n})
         store.cancel_task(conn, user.id, task.id)
     return user, task
 
@@ -137,7 +137,7 @@ def test_events_are_framed_with_id_event_and_json_data(
     assert stream.text.endswith("\n\n")
     events = stream.events
     assert [e["id"] for e in events] == [0, 1, 2, 3]
-    assert [e["event"] for e in events] == ["status", "note", "note", "status"]
+    assert [e["event"] for e in events] == ["status", "message", "message", "status"]
     first, note, _, last = (e["data"] for e in events)
     assert (first["from"], first["to"]) == (None, "queued")
     assert note["n"] == 0
@@ -191,7 +191,7 @@ def test_the_stream_stays_open_until_the_task_finishes_and_delivers_late_events(
     assert stream.thread is not None
     assert stream.thread.is_alive()
     with fresh_db.backend() as conn:
-        store.append_event(conn, task.id, "note", {"n": "late"})
+        store.append_event(conn, task.id, "message", {"n": "late"})
     threading.Event().wait(0.3)
     assert stream.thread.is_alive()  # a non-terminal task never ends the stream
     with fresh_db.backend() as conn:
@@ -211,7 +211,7 @@ def test_every_event_up_to_the_terminal_status_is_sent_before_the_stream_ends(
     stream = open_stream(sse_client, task.id, auth(user))
     with fresh_db.backend() as conn:
         for n in range(40):
-            store.append_event(conn, task.id, "note", {"n": n})
+            store.append_event(conn, task.id, "message", {"n": n})
         store.cancel_task(conn, user.id, task.id)
     stream.wait()
     assert [e["id"] for e in stream.events] == list(range(42))

@@ -33,11 +33,11 @@ import socket
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from swf import _mswea, policy, states, store
 from swf.agent.channel import (
@@ -77,7 +77,10 @@ from swf.pr import (
     render_pr_body,
 )
 from swf.preflight import Limits
-from swf.settings import AbuseLimits, SettingsError
+from swf.settings import AbuseLimits, Settings, SettingsError
+
+if TYPE_CHECKING:
+    from swf.egress import EgressConfig
 
 logger = logging.getLogger("swf.worker")
 
@@ -165,6 +168,7 @@ class WorkerConfig:
     heartbeat_seconds: int = 30
     abuse: AbuseLimits = field(default_factory=AbuseLimits)
     stop_poll_seconds: float = 5.0  # m8 §0.12: kill switch / cancel -> container gone in 30 s
+    sweep_seconds: float = 60.0  # m10a §1.5: remove workspaces of deleted tasks
 
     def __post_init__(self) -> None:
         if not _WORKER_ID_RE.fullmatch(self.worker_id):
@@ -314,7 +318,16 @@ class TaskRunner:
             self._fail(f"internal_error: {type(exc).__name__}")
         finally:
             self._cleanup()
+            self._release()
         return self._final_status()
+
+    def _release(self) -> None:
+        """m10a §1.5: hand the terminal task back (no worker), so the user can delete it."""
+        try:
+            with self.deps.db.backend() as conn:
+                store.release_task(conn, self.task.id, self.deps.config.worker_id)
+        except Exception:
+            logger.exception("releasing task %s failed", self.task.id)
 
     def _run(self) -> None:
         deps, task, channel = self.deps, self.task, self.channel
@@ -627,6 +640,24 @@ class TaskRunner:
 # --- the worker ----------------------------------------------------------------------------
 
 
+def orphan_workspaces(
+    names: Iterable[str], existing: set[uuid.UUID], running: set[uuid.UUID]
+) -> list[str]:
+    """Workspace folder names (canonical task UUIDs) whose task is gone and not running here.
+
+    Anything that is not a canonical lowercase UUID is never returned (m10a §1.5)."""
+    out: list[str] = []
+    for name in names:
+        try:
+            task_id = uuid.UUID(name)
+        except ValueError:
+            continue
+        if str(task_id) != name or task_id in existing or task_id in running:
+            continue
+        out.append(name)
+    return sorted(out)
+
+
 class Worker:
     def __init__(self, deps: RunnerDeps, *, orphan_cleaner: Callable[..., list[str]]) -> None:
         self.deps = deps
@@ -644,7 +675,9 @@ class Worker:
         """Interrupt expired-lease tasks (and, on restart, our own), then remove leftovers."""
         cfg = self.deps.config
         with self.deps.db.backend() as conn:
-            reaped = store.interrupt_orphans(conn, worker_id=cfg.worker_id, restart=restart)
+            reaped = store.interrupt_orphans(
+                conn, worker_id=cfg.worker_id, restart=restart, lease_seconds=cfg.lease_seconds
+            )
         ids = [task_id for task_id, _ in reaped]
         with self._lock:
             runners = [self.running[t] for t in ids if t in self.running]
@@ -685,6 +718,34 @@ class Worker:
         for runner in runners:
             runner.kill()
         return stopped
+
+    def sweep_workspaces(self) -> list[str]:
+        """Remove `workspaces_root/<id>` folders of deleted tasks; returns the removed names.
+
+        Assumes one workspaces root per database: a UUID folder with no task row in this database
+        is treated as orphaned (m10a A9).
+        """
+        root = self.deps.config.workspaces_root.resolve()
+        if not root.is_dir():
+            return []
+        names = [p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink()]
+        ids: set[uuid.UUID] = set()
+        for name in names:
+            with contextlib.suppress(ValueError):
+                ids.add(uuid.UUID(name))
+        with self.deps.db.backend() as conn:
+            existing = store.existing_task_ids(conn, ids)
+        removed: list[str] = []
+        for name in orphan_workspaces(names, existing, set(self._running_ids())):
+            path = (root / name).resolve()
+            if path.parent != root:
+                continue
+            try:
+                shutil.rmtree(path)
+                removed.append(name)
+            except OSError:
+                logger.exception("removing workspace %s failed", path)
+        return removed
 
     def claim(self) -> store.Task | None:
         cfg = self.deps.config
@@ -765,9 +826,16 @@ class Worker:
         beat_stop = threading.Event()
         background = self._background(beat_stop)
         last_reconcile = time.monotonic()
+        last_sweep = float("-inf")
         try:
             while not stop.is_set():
                 self._reap_threads()
+                if time.monotonic() - last_sweep >= cfg.sweep_seconds:
+                    last_sweep = time.monotonic()
+                    try:
+                        self.sweep_workspaces()
+                    except Exception:
+                        logger.exception("workspace sweep failed")
                 if time.monotonic() - last_reconcile >= cfg.heartbeat_seconds:
                     last_reconcile = time.monotonic()
                     try:
@@ -820,26 +888,104 @@ def agent_overrides_from_env(env: Mapping[str, str] | None = None) -> dict[str, 
     return out
 
 
+class _Unset:
+    """Sentinel type: an argument that was not passed (so `None` can mean "no publisher")."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = _Unset()
+
+
+def portkey_startup_check(env: Mapping[str, str]) -> str | None:
+    """m10a §1.8: the saved Portkey guardrail config, or None for an explicit `off` (warned)."""
+    from swf.agent.model import portkey_config_from_env
+
+    config = portkey_config_from_env(env)
+    if config is None:
+        logger.warning("Portkey saved guardrails are off (SWF_PORTKEY_CONFIG=off)")
+    return config
+
+
+def public_startup_check(env: Mapping[str, str], *, runtimes: frozenset[str]) -> None:
+    """m10b §0.2: in public mode (`SWF_PUBLIC=1`) strangers' code must run on gVisor and the
+    Portkey guardrails must be on. Raises SettingsError; no override."""
+    from swf.agent.model import portkey_config_from_env
+    from swf.settings import Deployment, SettingsError
+
+    if not Deployment.from_env(env).public:
+        return
+    runtime = (env.get("SWF_SANDBOX_RUNTIME") or "").strip()
+    if runtime != "runsc":
+        raise SettingsError("SWF_PUBLIC=1 needs SWF_SANDBOX_RUNTIME=runsc (gVisor)")
+    if "runsc" not in runtimes:
+        raise SettingsError("SWF_PUBLIC=1: Docker does not list the runsc runtime; install gVisor")
+    if portkey_config_from_env(env) is None:
+        raise SettingsError("SWF_PUBLIC=1 needs SWF_PORTKEY_CONFIG set to a pc-... slug, not off")
+
+
+def build_runner_deps(
+    settings: Settings,
+    db: Database,
+    config: WorkerConfig,
+    egress: EgressConfig,
+    *,
+    model_factory: Callable[[], AgentModel] | None = None,
+    workspaces: WorkspaceProvider | None = None,
+    publisher: PullRequestPublisher | None | _Unset = UNSET,
+    guard_factory: Callable[[], Guardrails] | None = None,
+) -> RunnerDeps:
+    """The production wiring of a worker (m10a §1.6); every part can be replaced. Opens nothing.
+
+    Defaults: `SWF_LOCAL_SOURCE` set -> copy that directory, no PR (dev); else clone from GitHub
+    and publish a PR. The model is `PhaseModel.from_env`, the guard `Guardrails.from_env`."""
+    from swf.agent.model import PhaseModel
+    from swf.github import GitHubClient
+    from swf.gitops import GitOps
+    from swf.pr import GitHubPublisher, GitHubWorkspace, db_token_source
+    from swf.sandbox import open_task_sandbox
+    from swf.tokens import TokenCipher
+
+    def env_factory(req: EnvRequest) -> ToolEnv:
+        return open_task_sandbox(egress, req)
+
+    source = os.environ.get("SWF_LOCAL_SOURCE")
+    default_workspaces: WorkspaceProvider
+    default_publisher: PullRequestPublisher | None
+    if source:
+        default_workspaces = LocalCopyWorkspace(Path(source), config.workspaces_root)
+        default_publisher = None
+    else:
+        tokens = db_token_source(db, TokenCipher(settings.token_encryption_key))
+        git = GitOps()
+        api = GitHubClient(base_url=settings.github_api_url)
+        default_workspaces = GitHubWorkspace(git, tokens, config.workspaces_root)
+        default_publisher = GitHubPublisher(git, api, tokens, on_retry=emit_publish_retry)
+    return RunnerDeps(
+        db=db,
+        workspaces=default_workspaces if workspaces is None else workspaces,
+        env_factory=env_factory,
+        model_factory=PhaseModel.from_env if model_factory is None else model_factory,
+        config=config,
+        publisher=default_publisher if isinstance(publisher, _Unset) else publisher,
+        guard_factory=Guardrails.from_env if guard_factory is None else guard_factory,
+    )
+
+
 def main() -> None:
     config_dir = _mswea.isolate()
     assert os.environ["MSWEA_GLOBAL_CONFIG_DIR"] == str(config_dir)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
-    from swf.agent.model import PhaseModel
     from swf.egress import EgressConfig, ensure_egress
-    from swf.github import GitHubClient
-    from swf.gitops import GitOps
-    from swf.pr import GitHubPublisher, GitHubWorkspace, db_token_source
-    from swf.sandbox import (
-        check_runtime,
-        cleanup_orphans,
-        open_task_sandbox,
-        runtime_from_env,
-        sandbox_user,
-    )
+    from swf.sandbox import check_runtime, cleanup_orphans, runtime_from_env, sandbox_user
     from swf.settings import Settings
-    from swf.tokens import TokenCipher
 
+    portkey_startup_check(os.environ)  # m10a §1.8: before anything else
+    from swf.sandbox import docker_runtimes
+
+    public_startup_check(os.environ, runtimes=docker_runtimes())  # m10b §0.2
     sandbox_user()  # m9 §0.7: fail fast on a root host, before any Docker work
     agent = agent_overrides_from_env()
     settings = Settings.from_env()
@@ -849,7 +995,6 @@ def main() -> None:
     if runtime is not None:  # m8 §1.7: fail fast when docker lacks the runtime
         check_runtime(runtime)
     logger.info("sandbox runtime: %s", runtime or "docker default")
-    source = os.environ.get("SWF_LOCAL_SOURCE")
     workspaces_root = Path(os.environ.get("SWF_WORKSPACES_ROOT") or "./workspaces").resolve()
     egress = EgressConfig()
     ensure_egress(egress)
@@ -858,39 +1003,24 @@ def main() -> None:
     )
     db = Database(settings.database_url, max_size=config.max_concurrent * 2 + 2)
     db.open()
+    try:
+        serve_until_signalled(
+            Worker(
+                build_runner_deps(settings, db, config, egress),
+                orphan_cleaner=partial(cleanup_orphans, egress=egress),
+            )
+        )
+    finally:
+        db.close()
 
-    def env_factory(req: EnvRequest) -> ToolEnv:
-        return open_task_sandbox(egress, req)
 
-    workspaces: WorkspaceProvider
-    publisher: PullRequestPublisher | None
-    if source:  # dev: copy a local directory, no PR
-        workspaces, publisher = LocalCopyWorkspace(Path(source), workspaces_root), None
-    else:
-        cipher = TokenCipher(settings.token_encryption_key)
-        tokens = db_token_source(db, cipher)
-        git = GitOps()
-        api = GitHubClient(base_url=settings.github_api_url)
-        workspaces = GitHubWorkspace(git, tokens, workspaces_root)
-        publisher = GitHubPublisher(git, api, tokens, on_retry=emit_publish_retry)
-    deps = RunnerDeps(
-        db=db,
-        workspaces=workspaces,
-        env_factory=env_factory,
-        model_factory=PhaseModel.from_env,
-        config=config,
-        publisher=publisher,
-        guard_factory=Guardrails.from_env,
-    )
-    worker = Worker(deps, orphan_cleaner=partial(cleanup_orphans, egress=egress))
+def serve_until_signalled(worker: Worker) -> None:
+    """`worker.serve` until SIGINT/SIGTERM (shared with the e2e launcher)."""
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(ValueError, OSError):
             signal.signal(sig, lambda *_: stop.set())
-    try:
-        worker.serve(stop)
-    finally:
-        db.close()
+    worker.serve(stop)
 
 
 if __name__ == "__main__":

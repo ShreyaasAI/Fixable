@@ -6,7 +6,7 @@ name: m8-gvisor
 on:
   workflow_dispatch:
   push:
-    branches: [feature/m8, feature/m9]
+    branches: [feature/m8, feature/m9, feature/m10]
 
 permissions:
   contents: read
@@ -94,7 +94,7 @@ jobs:
           set -uo pipefail
           { uname -m; docker info --format '{{json .Runtimes}}'; runsc --version | sed -n '1p'; git -c safe.directory="$GITHUB_WORKSPACE" log --oneline -1; } | tee "$LOG"
           env PYTHONDONTWRITEBYTECODE=1 SWF_SANDBOX_RUNTIME=runsc \
-            "$UV_BIN" run --locked pytest -o addopts="" -q -m "not live" -rs --junitxml="$JUNIT" 2>&1 | tee -a "$LOG"
+            "$UV_BIN" run --locked pytest -o addopts="" -q -m "not live and not e2e" -rs --junitxml="$JUNIT" 2>&1 | tee -a "$LOG"
           exit "${PIPESTATUS[0]}"
 
       - name: gVisor, workspace-owner and pkgcache Docker tests ran (not skipped)

@@ -18,7 +18,7 @@ from swf.agent.model import (
 from swf.agent.tools import tool_schemas
 
 KEY = "pk-test-secret-0123456789"
-ENV = {"PORTKEY_API_KEY": KEY}
+ENV = {"PORTKEY_API_KEY": KEY, "SWF_PORTKEY_CONFIG": "off"}  # m10a §1.8
 MESSAGES: list[dict[str, Any]] = [
     {"role": "system", "content": "sys"},
     {"role": "user", "content": "task", "extra": {"internal": True}},

@@ -22,6 +22,7 @@ from minisweagent.exceptions import FormatError
 from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
 
 from swf.agent.tools import TOOL_SCHEMAS, tool_schemas
+from swf.settings import SettingsError
 
 DEFAULT_PHASE_MODELS: dict[str, str] = {
     "investigate": "@baidu-ernie/baidu/ernie-5.5-flash-preview:free",
@@ -47,6 +48,17 @@ class PhaseModelConfig(LitellmModelConfig):
 
 class MissingApiKey(Exception):
     pass
+
+
+def portkey_config_from_env(env: Mapping[str, str]) -> str | None:
+    """m10a §1.8: Portkey saved guardrails are on by default. `SWF_PORTKEY_CONFIG` must be a
+    `pc-...` slug, or exactly `off` (after strip) to opt out; anything else is a `SettingsError`."""
+    value = (env.get("SWF_PORTKEY_CONFIG") or "").strip()
+    if value == "off":
+        return None
+    if PORTKEY_CONFIG_RE.fullmatch(value):
+        return value
+    raise SettingsError("set SWF_PORTKEY_CONFIG to a Portkey config slug (pc-...), or 'off'")
 
 
 class AgentModel(Protocol):
@@ -103,10 +115,10 @@ class PhaseModel(LitellmModel):
             raise MissingApiKey(f"{self.config.api_key_env} is not set")
         self._api_key = key  # never on self.config: config is serialised into the trajectory
         if self.config.portkey_config is None:
-            self.config.portkey_config = source.get("SWF_PORTKEY_CONFIG") or None
+            self.config.portkey_config = portkey_config_from_env(source)
         slug = self.config.portkey_config
         if slug is not None and not PORTKEY_CONFIG_RE.fullmatch(slug):
-            raise ValueError("SWF_PORTKEY_CONFIG must be a Portkey config slug (pc-...)")
+            raise SettingsError("portkey_config must be a Portkey config slug (pc-...)")
         self._completion = completion
         self.phase = "investigate"
         self.config.model_name = self.current_model
@@ -114,8 +126,8 @@ class PhaseModel(LitellmModel):
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, **kwargs: Any) -> PhaseModel:
         """Defaults plus `SWF_MODEL_INVESTIGATE` (investigate + plan) and `SWF_MODEL_EXECUTE`
-        (execute + verify) overrides; the key comes from `PORTKEY_API_KEY`, the optional saved
-        guardrail config from `SWF_PORTKEY_CONFIG` (read in `__init__`)."""
+        (execute + verify) overrides; the key comes from `PORTKEY_API_KEY`, the saved guardrail
+        config from `SWF_PORTKEY_CONFIG` (required: a slug or `off`; read in `__init__`)."""
         source = os.environ if env is None else env
         models = dict(DEFAULT_PHASE_MODELS)
         if investigate := source.get("SWF_MODEL_INVESTIGATE"):

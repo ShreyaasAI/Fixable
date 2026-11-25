@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -82,6 +82,22 @@ def connect(db_url: str) -> Any:
     return psycopg.connect(db_url, autocommit=True, row_factory=dict_row)
 
 
+def api_command(api_argv: Sequence[str] | None, port: int) -> list[str]:
+    """The API process argv. Default: uvicorn on the factory; a custom `api_argv` (a launcher)
+    gets `--host 127.0.0.1 --port <port>` appended, so it can bind the port the stack waits on."""
+    if api_argv is None:
+        return [
+            sys.executable, "-m", "uvicorn", "swf.api.main:create_app_from_env",
+            "--factory", "--workers", "1", "--host", "127.0.0.1", "--port", str(port),
+        ]  # fmt: skip
+    return [*api_argv, "--host", "127.0.0.1", "--port", str(port)]
+
+
+def worker_command(worker_argv: Sequence[str] | None) -> list[str]:
+    """The worker process argv: `python -m swf.worker` unless a custom launcher is given."""
+    return [sys.executable, "-m", "swf.worker"] if worker_argv is None else list(worker_argv)
+
+
 class LocalStack:
     """Context manager; `users`, `api_url` and `db_url` are set by `__enter__`."""
 
@@ -93,12 +109,16 @@ class LocalStack:
         github_login: str,
         knobs: Mapping[str, str],
         user_names: tuple[str, ...] = ("eval-a", "eval-b"),
+        api_argv: list[str] | None = None,
+        worker_argv: list[str] | None = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.github_id = github_id
         self.github_login = github_login
         self.knobs = dict(knobs)
         self.user_names = user_names
+        self.api_argv = api_argv
+        self.worker_argv = worker_argv
         self.secret = secrets.token_urlsafe(48)
         self.users: dict[str, EvalUser] = {}
         self.api_url = ""
@@ -166,6 +186,8 @@ class LocalStack:
                 # the harness's own cache dir, so the worker computes the same conf-sha
                 "SWF_PKGCACHE_DIR": str(EgressConfig().pkgcache_dir),
                 "PYTHONDONTWRITEBYTECODE": "1",
+                # m10a §1.8: the worker requires it; a knob may set a real `pc-...` slug
+                "SWF_PORTKEY_CONFIG": "off",
             }
         )
         extra.update(self.knobs)
@@ -199,17 +221,10 @@ class LocalStack:
             self._start_db()
             env = self.env()
             port = _free_port()
-            self._spawn(
-                "api",
-                [
-                    sys.executable, "-m", "uvicorn", "swf.api.main:create_app_from_env",
-                    "--factory", "--workers", "1", "--host", "127.0.0.1", "--port", str(port),
-                ],
-                env,
-            )  # fmt: skip
+            self._spawn("api", api_command(self.api_argv, port), env)
             self.api_url = f"http://127.0.0.1:{port}"
             self._wait_api(self.api_url)
-            self._spawn("worker", [sys.executable, "-m", "swf.worker"], env)
+            self._spawn("worker", worker_command(self.worker_argv), env)
         except BaseException:
             self.__exit__(None, None, None)
             raise
