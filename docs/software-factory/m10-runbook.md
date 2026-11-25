@@ -1,7 +1,7 @@
 # M10 runbook: run the web UI on localhost
 
 - **Purpose:** One-time setup you do in the GitHub, Supabase and Portkey dashboards, then the commands that start SWF on your PC with the web UI.
-- **Last updated:** 2026-11-24
+- **Last updated:** 2026-11-25
 - **Sources:** m10a-contract §0 (decisions 2, 3, 14), §1.8, §5.
 
 No secret goes into git. Server secrets live in the repo-root `.env`. The browser gets only `web/.env.local`, which holds public values.
@@ -52,21 +52,21 @@ The worker refuses to start unless `SWF_PORTKEY_CONFIG` is a `pc-…` slug or th
 
 ## 4. Run (each session)
 
-Docker Desktop must be running. Use three terminals, all in the repo root:
+Docker Desktop must be running. Use three terminals, all in the repo root. SWF reads settings from the environment only, so the API and the worker load `.env` with `--env-file` (from a worktree, point at the main checkout's `.env`, e.g. `..\..\..\.env`):
 
 ```powershell
-uv run uvicorn swf.api.main:create_app_from_env --factory --workers 1
+uv run --env-file .env uvicorn swf.api.main:create_app_from_env --factory --workers 1
 ```
 
 ```powershell
-uv run python -m swf.worker
+uv run --env-file .env python -m swf.worker
 ```
 
 ```powershell
 cd web; npm ci; npm run dev
 ```
 
-Open `http://localhost:5173` and sign in with GitHub. The Vite dev server proxies `/v1` to `127.0.0.1:8000`; set `SWF_API_PROXY` to use another API address.
+Open `http://localhost:5173` and sign in with GitHub. The Vite dev server proxies `/v1` to `127.0.0.1:8000`; set `SWF_API_PROXY` to use another API address. A 500 on any `/v1/...` request with no API log line means the API is not running (the proxy cannot connect).
 
 ## 5. Tests
 
