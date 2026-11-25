@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, configureApi, type Me } from "./api";
 import { currentToken, initAuth, onLinkError, signOut, subscribe } from "./auth";
-import { AppError } from "./components";
+import { AppError, ErrorBoundary } from "./components";
 import { messageFor } from "./messages";
 import { go } from "./nav";
 import { Admin } from "./screens/Admin";
@@ -116,7 +116,7 @@ export function App() {
       </header>
       <main className="page" id="main">
         <AppError message={error} />
-        {screen}
+        <ErrorBoundary key={route}>{screen}</ErrorBoundary>
       </main>
     </>
   );

@@ -56,6 +56,7 @@ export function Dashboard({ me }: { me: Me | null }) {
 
 function Quota({ me }: { me: Me }) {
   const { limits, remaining } = me;
+  if (!limits || !remaining) return null; // an older API without quota fields
   return (
     <section className="quota" aria-label="Quota">
       <div className="quota-item" data-testid="quota-tasks">

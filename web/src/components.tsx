@@ -1,6 +1,6 @@
 // Shared UI pieces: status badge, confirm dialog, error alert (m10a §2, §3).
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { Component, useEffect, useRef, type ReactNode } from "react";
 
 export function StatusBadge({ status }: { status: string }) {
   return (
@@ -25,6 +25,25 @@ export function AppError({ message }: { message: string | null }) {
       {message}
     </div>
   );
+}
+
+/** A render error shows as an alert in the page instead of unmounting the whole app. */
+export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error };
+  }
+
+  render(): ReactNode {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="alert" role="alert" data-testid="page-error">
+        This page failed to show: {this.state.error.message}. Reload the page; if it keeps
+        happening, check that the API is the same version as this UI.
+      </div>
+    );
+  }
 }
 
 interface ConfirmProps {

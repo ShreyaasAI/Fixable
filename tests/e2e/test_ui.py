@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Callable
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, Route, expect
 
 from e2e import fakes
 from e2e.conftest import (
@@ -51,6 +51,22 @@ def test_sign_in_links_github_and_shows_quota(page: Page, e2e_stack: Stack, user
     # the browser posted the provider token: the API now holds a linked GitHub token
     me = e2e_stack.api(user, "GET", "/v1/me").json()
     assert me["github_linked"] is True
+
+
+def test_an_api_without_quota_fields_does_not_blank_the_page(page: Page, user: EvalUser) -> None:
+    # An older API (e.g. M9) answers /v1/me without `limits`/`remaining`: the shell still renders.
+    def strip_quota(route: Route) -> None:
+        resp = route.fetch()
+        body = resp.json()
+        body.pop("limits", None)
+        body.pop("remaining", None)
+        route.fulfill(response=resp, json=body)
+
+    page.route("**/v1/me", strip_quota)
+    sign_in(page, user)
+    expect(page.get_by_test_id("user-login")).to_contain_text(fakes.GITHUB_LOGIN)
+    expect(page.get_by_role("heading", name="Tasks")).to_be_visible()
+    expect(page.get_by_test_id("quota-tasks")).to_have_count(0)
 
 
 def test_repo_picker_prefills_default_branch(page: Page, user: EvalUser) -> None:
