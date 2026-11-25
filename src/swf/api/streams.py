@@ -37,7 +37,8 @@ class StreamSlots:
         self._per_user = per_user
         self._total = total
         self._open: Counter[uuid.UUID] = Counter()
-        self._lock = threading.Lock()
+        # Reentrant: a slot's GC finalizer can run inside `acquire` on the same thread.
+        self._lock = threading.RLock()
 
     def acquire(self, user_id: uuid.UUID) -> Slot | None:
         """A slot, or None when the user or the whole API is at its cap."""

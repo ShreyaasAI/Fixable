@@ -101,21 +101,38 @@ class AbuseLimits:
 # --- deployment (m10b §0.2-0.3) ---------------------------------------------------------------
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
-_ORIGIN_RE = re.compile(r"^(https?)://([A-Za-z0-9.-]+)(:[0-9]{1,5})?$")
+_ORIGIN_RE = re.compile(r"^(https?)://([a-z0-9.-]+)(?::([0-9]{1,5}))?$")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 _TRUE = {"1", "true"}
 _FALSE = {"", "0", "false"}
 
 
 def _origin(raw: str) -> str:
-    """One exact browser origin: https, or http on localhost; no path, query or wildcard."""
-    value = raw.strip().removesuffix("/")
+    """One exact browser origin, normalised as browsers send it (lowercase, no default port):
+    https, or http on localhost; no path, query, userinfo or wildcard."""
+    value = raw.strip().removesuffix("/").lower()
     m = _ORIGIN_RE.fullmatch(value)
-    if m is None or (m.group(1) == "http" and m.group(2) not in _LOCAL_HOSTS):
+    port = int(m.group(3)) if m and m.group(3) else None
+    if (
+        m is None
+        or (m.group(1) == "http" and m.group(2) not in _LOCAL_HOSTS)
+        or (port is not None and not 1 <= port <= 65535)
+        or m.group(2).startswith(".")
+        or m.group(2).endswith(".")
+    ):
         raise SettingsError(
-            f"SWF_CORS_ORIGINS: {raw.strip()!r} is not an origin like https://app.example.com "
+            "SWF_CORS_ORIGINS: each entry must be an origin like https://app.example.com "
             "(https only, except http://localhost or http://127.0.0.1)"
         )
-    return value
+    scheme, host = m.group(1), m.group(2)
+    if port is None or port == _DEFAULT_PORTS[scheme]:
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+def _is_local(origin: str) -> bool:
+    host = origin.split("://", 1)[1].split(":", 1)[0]
+    return host in _LOCAL_HOSTS
 
 
 @dataclass(frozen=True)
@@ -136,4 +153,7 @@ class Deployment:
         public = flag in _TRUE
         if public and not origins:
             raise SettingsError("SWF_PUBLIC=1 needs SWF_CORS_ORIGINS (the web app's origin)")
+        if not public and any(not _is_local(o) for o in origins):
+            # Serving a public origin is exposure: the worker's gVisor gate must be on too.
+            raise SettingsError("a non-localhost SWF_CORS_ORIGINS entry needs SWF_PUBLIC=1")
         return cls(public=public, cors_origins=origins)

@@ -69,9 +69,11 @@ def _cors(e: Mapping[str, str]) -> Check:
 
     fix = "set SWF_CORS_ORIGINS to the Vercel origin, e.g. https://<project>.vercel.app"
     try:
-        origins = Deployment.from_env({"SWF_CORS_ORIGINS": e.get("SWF_CORS_ORIGINS", "")})
-    except SettingsError as exc:
-        return Check("cors origins", False, f"{exc}; {fix}")
+        origins = Deployment.from_env(
+            {"SWF_PUBLIC": "1", "SWF_CORS_ORIGINS": e.get("SWF_CORS_ORIGINS", "")}
+        )
+    except SettingsError:
+        return Check("cors origins", False, f"{fix} (https only; no path or wildcard)")
     ok = any(o.startswith("https://") for o in origins.cors_origins)
     return Check("cors origins", ok, fix)
 

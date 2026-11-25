@@ -41,3 +41,16 @@
 ## 3. Evidence at close
 
 Full non-live suite, e2e suite, ruff, mypy, web typecheck/build, CI e2e run on `swf-ci`, `deploycheck` output on this PC (expected to fail the gVisor and public checks: the PC runs Docker Desktop with runc).
+
+## 4. Amendments from the code review (2026-11-25)
+
+- **B1, SSE threads:** the event stream is an async generator. It holds a worker thread only during each database poll and waits with `anyio.sleep`, so open streams no longer use up the 40-thread pool, and a client that leaves frees its slot at once.
+- **B2, slot lock:** `StreamSlots` uses a reentrant lock (a slot's GC finalizer can run inside `acquire`).
+- **B3, exposure needs public mode:** a non-localhost entry in `SWF_CORS_ORIGINS` without `SWF_PUBLIC=1` is refused at startup (API and worker), so the API cannot serve a public origin while the worker's gVisor gate is off. A test proves `worker.main()` runs the public gate before any Docker or database work.
+- **B4, Stop during a 429 wait:** waits are slept in `poll_seconds` slices with a stop check between them.
+- **B5, origins:** normalised as browsers send them (lowercase, default port dropped); ports outside 1-65535 and leading/trailing-dot hosts are refused.
+- **B6, deploycheck:** a failing CORS check no longer echoes the value.
+- **B7, Retry-After:** `retry-after-ms` is read first; odd header objects give None instead of raising.
+- **B8, retry event:** a 429 wait reports the ordinary `attempt` it is waiting for, plus `rate_limit_wait` (its own count).
+- **B9, keep-alive:** GitHub disables scheduled workflows after 60 days without repository activity; the runbook says so.
+

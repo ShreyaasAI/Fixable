@@ -37,13 +37,14 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
+import anyio.to_thread
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -473,22 +474,28 @@ def create_app(
                 status.HTTP_429_TOO_MANY_REQUESTS, "too_many_streams", headers={"Retry-After": "5"}
             )
 
-        def stream() -> Iterator[str]:
+        def poll(after: int) -> tuple[dict[str, Any] | None, list[store.Event]]:
+            with deps.db.as_user(claims) as conn:
+                row = conn.execute(
+                    "select status, event_seq from public.tasks where id = %s and user_id = %s",
+                    [task_id, user_id],
+                ).fetchone()
+                return row, store.list_events(conn, user_id, task_id, after_seq=after)
+
+        async def stream() -> AsyncIterator[str]:
+            # m10b review #1: async, so an open stream holds a worker thread only while it polls
+            # the database, not while it waits; a client that leaves cancels the wait at once.
             try:
-                yield from _stream()
+                async for chunk in _stream():
+                    yield chunk
             finally:
                 slot.release()
 
-        def _stream() -> Iterator[str]:
+        async def _stream() -> AsyncIterator[str]:
             sent = cursor
             last_output = time.monotonic()
             while True:
-                with deps.db.as_user(claims) as conn:
-                    row = conn.execute(
-                        "select status, event_seq from public.tasks where id = %s and user_id = %s",
-                        [task_id, user_id],
-                    ).fetchone()
-                    batch = store.list_events(conn, user_id, task_id, after_seq=sent)
+                row, batch = await anyio.to_thread.run_sync(poll, sent)
                 if row is None:
                     return
                 for event in batch:
@@ -506,7 +513,7 @@ def create_app(
                 if time.monotonic() - last_output >= deps.sse_keepalive_seconds:
                     yield ": ping\n\n"
                     last_output = time.monotonic()
-                time.sleep(deps.sse_poll_seconds)
+                await anyio.sleep(deps.sse_poll_seconds)
 
         body = stream()
         slot.release_with(body)  # a response dropped before it ever ran frees its slot too

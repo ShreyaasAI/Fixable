@@ -1,7 +1,7 @@
 # Web Coding Agent — Implementation Plan
 
 - **Purpose:** The ordered, test-first build plan for the approved MVP. A new session should be able to pick up the next unchecked milestone from here.
-- **Last updated:** 2026-11-24
+- **Last updated:** 2026-11-25
 - **Status:** Approved (user, 2026-11-19, together with M0). M0–M4 done; M4 approved (user, 2026-11-20); M5 and M6 approved, merged to `main` (`1235cdc`); M7 and M8 approved, merged to `main` (M8: `4f982a4`); M9 built and evaluated on `feature/m9`, wall-ratio miss accepted (user, 2026-11-23), M9 approved (user, 2026-11-23), merged to `main` (`955818b`)
 - **Related artifacts:** `docs/software-factory/problem-specification.md` (v2, Approved — scope source of truth) · `docs/software-factory/research-plan.md` (v2, Approved — rationale, options, RQs) · `PROMPT.md` (process rules)
 
@@ -180,8 +180,8 @@ Token backend-only + encrypted · clean-clone PR, hooks off · branch computed s
 ## 16. Rollout
 
 1. Local dev (Windows + Docker Desktop) through M7.
-2. Supabase Free project from M8. M9 evaluation ran on the local PC (2026-11-23); the public-deploy host is still open (M10) and must be $0 with no credit card (Oracle dropped 2026-11-22).
-3. Open beta after M10 with quotas on. A free-tier keep-alive (scheduled health ping) prevents Supabase pausing.
+2. Supabase Free project from M8. M9 evaluation ran on the local PC (2026-11-23). Public deploy [D, M10b, 2026-11-25]: web app on Vercel; API and worker on the PC behind a Cloudflare quick tunnel; worker on gVisor in WSL2 Ubuntu (m10b-contract §0, m10-runbook §6). $0, no credit card.
+3. Open beta after M10 with quotas on. A free-tier keep-alive (`.github/workflows/supabase-keepalive.yml`, every 3 days) prevents Supabase pausing.
 
 ## 17. Non-goals (MVP)
 
@@ -305,11 +305,17 @@ Web IDE · cloud memory/preferences · plans/billing/uploads · voice · non-bug
   5. `store.delete_task` (terminal only, FK cascade, audit) plus a worker sweep of workspace folders with no task;
   6. `remaining(...)` quota function next to `check_quota`, used by `/v1/me`.
   - Rejected: splitting `app.py` into routers, moving the SSE generator, typed per-event payloads, `github.py` changes. Noted for M10b: each SSE stream holds a threadpool thread. Also for M10b: `POST /v1/preflight` has only the per-user API rate limit, and each call costs GitHub and registry requests; consider a preflight-specific limit or cache.
+- **M10b deploy readiness [D, planner under user delegation, 2026-11-25: "Do everything and don't ask me anything... complete the whole project. Just leave the UI."]** (detail: `m10b-contract.md`):
+  - `SWF_PUBLIC=1` + `SWF_CORS_ORIGINS` exact-origin allowlist; the worker refuses public mode without gVisor (`runsc`) or Portkey guardrails.
+  - Provider HTTP 429: own wait schedule (10-60 s, `Retry-After` up to 120 s), no ordinary attempt used.
+  - Per-user pre-flight bucket (10/min, burst 5); open SSE streams capped (4 per user, 40 in all).
+  - `python -m swf.deploycheck`; `web/vercel.json`; Supabase keep-alive workflow; e2e in CI on `swf-ci`.
+  - Left to the user: the manual UI checklist + live smoke PR (next session), the Vercel deploy, gVisor in WSL2, the tunnel, the keep-alive secrets.
 - **Added [D, user, 2026-11-23]:** turn Portkey saved guardrails on by default (`SWF_PORTKEY_CONFIG`, with production output checks such as a secret regex), in addition to the in-process guard (m7 §12, m9-results notes).
 
 ## 19. Open questions [Q]
 
 1. ~~Idle-approval timeout default (proposed 24 h).~~ — resolved: 24 h [D, 2026-11-20].
-2. SSE (default) vs Supabase Realtime for live updates.
+2. ~~SSE (default) vs Supabase Realtime for live updates.~~ — resolved: SSE over fetch streaming with `Last-Event-ID` resume [D, M10a, 2026-11-24].
 3. ~~Portkey free-plan guardrail availability (else in-process output checks).~~ — resolved 2026-11-21 [D]: free plan supports saved regex and JSON-schema output guardrails (`pg-swf-m7-c8f3fc`, config `pc-swf-m7-d1cf5c`); used opt-in via `SWF_PORTKEY_CONFIG`; in-process output guard stays mandatory (`m7-contract.md` §13 A1).
 4. ~~Language mix of seeded repos~~ — resolved: Python only [D].

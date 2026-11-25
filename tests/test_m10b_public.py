@@ -121,3 +121,43 @@ def test_report_never_prints_a_value(capsys: pytest.CaptureFixture[str]) -> None
 
 def test_report_exit_code_is_zero_when_all_pass(capsys: pytest.CaptureFixture[str]) -> None:
     assert deploycheck.report(deploycheck.checks(ready_env(), docker_runtimes=RUNSC)) == 0
+
+
+def test_a_failing_cors_check_does_not_print_the_value(capsys: pytest.CaptureFixture[str]) -> None:
+    bad = "http://not-local-origin.example"
+    env = {**ready_env(), "SWF_CORS_ORIGINS": bad}
+    deploycheck.report(deploycheck.checks(env, docker_runtimes=RUNSC))
+    out = capsys.readouterr().out
+    assert "FAIL cors origins" in out
+    assert bad not in out
+
+
+def test_main_runs_the_public_gate_before_any_docker_or_database_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import swf.sandbox
+    import swf.worker
+
+    calls: list[str] = []
+
+    class NoDatabase:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            calls.append("Database()")
+            raise AssertionError("Database must not be built before the public gate")
+
+    def no(name: str) -> object:
+        def fn(*_a: object, **_k: object) -> object:
+            calls.append(name)
+            raise AssertionError(f"{name} must not run before the public gate")
+
+        return fn
+
+    for k, v in PUBLIC.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(swf.sandbox, "docker_runtimes", lambda **_k: RUNC)
+    monkeypatch.setattr(swf.worker, "Database", NoDatabase)
+    monkeypatch.setattr(swf.sandbox, "check_runtime", no("check_runtime"))
+    monkeypatch.setattr(swf.sandbox, "cleanup_orphans", no("cleanup_orphans"))
+    with pytest.raises(SettingsError, match="runsc"):
+        swf.worker.main()
+    assert calls == []

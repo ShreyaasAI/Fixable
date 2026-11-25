@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -199,3 +200,30 @@ def test_a_refused_stream_request_holds_no_slot(
     with fresh_db.backend() as conn:
         store.cancel_task(conn, user.id, task.id)
     assert open_stream(client, task.id, auth(user)).wait().status == 200
+
+
+def test_a_client_that_leaves_frees_its_slot(
+    make_sse_client: Callable[[AbuseLimits], TestClient], fresh_db: Database, auth: AuthFn
+) -> None:
+    client = make_sse_client(_limits(per_user=1, total=10))
+    user = make_db_user(fresh_db)
+    task = queued_task(fresh_db, user=user)
+    with fresh_db.backend() as conn:
+        store.append_event(conn, task.id, "message", {"n": 1})
+    with client.stream("GET", f"/v1/tasks/{task.id}/events", headers=auth(user)) as resp:
+        assert resp.status_code == 200
+        next(resp.iter_lines())  # the stream is live; then the client hangs up
+    deadline = time.monotonic() + 5
+    status = 0
+    while time.monotonic() < deadline:
+        probe = open_stream(client, task.id, auth(user))
+        threading.Event().wait(0.3)
+        if probe.thread is not None and not probe.thread.is_alive():
+            status = probe.status  # refused (429): the old slot is still held
+            threading.Event().wait(0.2)
+            continue
+        status = 200  # accepted and streaming: the slot was freed
+        break
+    assert status == 200
+    with fresh_db.backend() as conn:
+        store.cancel_task(conn, user.id, task.id)

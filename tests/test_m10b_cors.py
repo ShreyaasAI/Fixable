@@ -34,7 +34,10 @@ def test_unset_means_local_and_no_cors() -> None:
 
 
 def test_origins_are_split_trimmed_and_lose_a_trailing_slash() -> None:
-    env = {"SWF_CORS_ORIGINS": f" {SITE}/ , http://localhost:5173,http://127.0.0.1:4173 "}
+    env = {
+        "SWF_PUBLIC": "1",
+        "SWF_CORS_ORIGINS": f" {SITE}/ , http://localhost:5173,http://127.0.0.1:4173 ",
+    }
     assert Deployment.from_env(env).cors_origins == (
         SITE,
         "http://localhost:5173",
@@ -56,14 +59,15 @@ def test_origins_are_split_trimmed_and_lose_a_trailing_slash() -> None:
 )
 def test_bad_origins_are_refused(origin: str) -> None:
     with pytest.raises(SettingsError, match="SWF_CORS_ORIGINS"):
-        Deployment.from_env({"SWF_CORS_ORIGINS": origin})
+        Deployment.from_env({"SWF_PUBLIC": "1", "SWF_CORS_ORIGINS": origin})
 
 
 @pytest.mark.parametrize(
     ("raw", "public"), [("1", True), ("true", True), ("0", False), ("", False)]
 )
 def test_public_flag(raw: str, public: bool) -> None:
-    env = {"SWF_PUBLIC": raw, "SWF_CORS_ORIGINS": SITE}
+    origin = SITE if public else "http://localhost:5173"
+    env = {"SWF_PUBLIC": raw, "SWF_CORS_ORIGINS": origin}
     assert Deployment.from_env(env).public is public
 
 
@@ -77,8 +81,40 @@ def test_public_needs_origins() -> None:
         Deployment.from_env({"SWF_PUBLIC": "1"})
 
 
+@pytest.mark.parametrize(
+    ("raw", "origin"),
+    [
+        ("https://A.Vercel.App", "https://a.vercel.app"),  # browsers send lowercase hosts
+        ("https://swf.example:443", "https://swf.example"),  # and drop the default port
+        ("http://localhost:80", "http://localhost"),
+        ("HTTPS://swf.example", "https://swf.example"),
+    ],
+)
+def test_origins_are_normalised_as_browsers_send_them(raw: str, origin: str) -> None:
+    env = {"SWF_PUBLIC": "1", "SWF_CORS_ORIGINS": raw}
+    assert Deployment.from_env(env).cors_origins == (origin,)
+
+
+@pytest.mark.parametrize("raw", ["https://swf.example:0", "https://swf.example:99999"])
+def test_ports_out_of_range_are_refused(raw: str) -> None:
+    with pytest.raises(SettingsError, match="SWF_CORS_ORIGINS"):
+        Deployment.from_env({"SWF_PUBLIC": "1", "SWF_CORS_ORIGINS": raw})
+
+
+def test_a_public_origin_without_public_mode_is_refused() -> None:
+    # Review M10b #3: exposure must not be possible while the worker's public gate is off.
+    with pytest.raises(SettingsError, match="SWF_PUBLIC=1"):
+        Deployment.from_env({"SWF_CORS_ORIGINS": SITE})
+
+
+def test_local_origins_need_no_public_mode() -> None:
+    env = {"SWF_CORS_ORIGINS": "http://localhost:5173"}
+    assert Deployment.from_env(env).cors_origins == ("http://localhost:5173",)
+
+
 def test_build_app_deps_reads_the_origins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SWF_CORS_ORIGINS", SITE)
+    monkeypatch.setenv("SWF_PUBLIC", "1")
     settings = Settings(
         database_url="postgresql://u:p@127.0.0.1:1/db",
         supabase_url="https://ref.supabase.co",

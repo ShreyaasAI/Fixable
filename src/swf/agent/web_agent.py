@@ -155,17 +155,21 @@ def is_rate_limit(exc: BaseException) -> bool:
 
 
 def retry_after_seconds(exc: BaseException) -> float | None:
-    """The provider's `Retry-After` in seconds (capped at 120), if the error carries one."""
+    """The provider's `retry-after-ms` / `retry-after` (seconds) wait, capped at 120 s, if the
+    error carries one. The HTTP-date form and anything unreadable give None."""
     headers = getattr(getattr(exc, "response", None), "headers", None)
-    if headers is None:
+    get = getattr(headers, "get", None)
+    if not callable(get):
         return None
-    try:
-        value = float(str(headers.get("retry-after", "")).strip())
-    except ValueError:
-        return None
-    if value != value or value < 0:  # NaN or negative
-        return None
-    return min(value, RETRY_AFTER_CAP_SECONDS)
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        try:
+            value = float(str(get(name, "") or "").strip()) * scale
+        except (ValueError, TypeError):
+            continue
+        if value != value or value < 0:  # NaN or negative
+            continue
+        return min(value, RETRY_AFTER_CAP_SECONDS)
+    return None
 
 
 def _truncate(value: str, limit: int) -> str:
@@ -330,6 +334,17 @@ class WebAgent(DefaultAgent):
 
     # --- helpers ---------------------------------------------------------------------------
 
+    def _sleep_unless_stopped(self, seconds: float) -> None:
+        """Sleep in `poll_seconds` slices, so a Stop is noticed within one slice."""
+        left = seconds
+        step = max(self.cfg.poll_seconds, 0.1)
+        while left > 0:
+            self._raise_if_stopped()
+            chunk = min(step, left)
+            self.sleep(chunk)
+            left -= chunk
+        self._raise_if_stopped()
+
     def _raise_if_stopped(self) -> None:
         if states.is_terminal(self.channel.status()):
             raise TaskStopped()
@@ -414,14 +429,14 @@ class WebAgent(DefaultAgent):
                         "retry",
                         {
                             "step": step,
-                            "attempt": rate_limited,
+                            "attempt": attempt + 1,
                             "error": error,
                             "rate_limited": True,
+                            "rate_limit_wait": rate_limited,
                             "wait_seconds": wait,
                         },
                     )
-                    self.sleep(wait)
-                    self._raise_if_stopped()
+                    self._sleep_unless_stopped(wait)
                     continue
                 self.channel.emit("retry", {"step": step, "attempt": attempt, "error": error})
                 self._exhausted_or_wait(step, attempt, error)

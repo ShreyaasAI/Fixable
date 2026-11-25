@@ -6,7 +6,7 @@ name: m8-gvisor
 on:
   workflow_dispatch:
   push:
-    branches: [feature/m8, feature/m9]
+    branches: [feature/m8, feature/m9, feature/m10]
 
 permissions:
   contents: read

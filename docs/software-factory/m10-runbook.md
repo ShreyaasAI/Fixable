@@ -93,7 +93,7 @@ Vercel serves the web app; the API and the worker stay on this PC behind a Cloud
    SWF_CORS_ORIGINS=https://<project>.vercel.app
    SWF_SANDBOX_RUNTIME=runsc
    ```
-   `SWF_PORTKEY_CONFIG` must be the `pc-…` slug (not `off`). The worker refuses to start in public mode without gVisor or the guardrails.
+   `SWF_PORTKEY_CONFIG` must be the `pc-…` slug (not `off`). The worker refuses to start in public mode without gVisor or the guardrails. A non-localhost origin without `SWF_PUBLIC=1` is refused, so public mode cannot be forgotten.
 3. **Tunnel.** Install `cloudflared` (`winget install --id Cloudflare.cloudflared`), then:
    ```powershell
    cloudflared tunnel --url http://127.0.0.1:8000
@@ -106,7 +106,7 @@ Vercel serves the web app; the API and the worker stay on this PC behind a Cloud
    uv run --env-file .env python -m swf.deploycheck
    ```
    Every line must say PASS. Then start the API (Windows) and the worker (WSL Ubuntu) as in §4, then the tunnel.
-7. **Keep-alive.** In the GitHub repo that hosts `.github/workflows/supabase-keepalive.yml`: Settings → Secrets and variables → Actions → add `SUPABASE_URL` and `SUPABASE_ANON_KEY` (public values). The workflow reads one row every three days so the Free project is not paused.
+7. **Keep-alive.** In the GitHub repo that hosts `.github/workflows/supabase-keepalive.yml`: Settings → Secrets and variables → Actions → add `SUPABASE_URL` and `SUPABASE_ANON_KEY` (public values). The workflow reads one row every three days so the Free project is not paused. GitHub turns scheduled workflows off after 60 days without repository activity: re-enable it under Actions if it stops.
 
 Limits in front of strangers (defaults; `SWF_*` overrides in `settings.py`): 5 tasks/day, $3/day, 1 running task per user, 120 API calls/min, 10 pre-flights/min, 4 open event streams per user and 40 in all. A provider HTTP 429 waits up to about 4 minutes before it counts as a failed model call.
 
