@@ -908,6 +908,23 @@ def portkey_startup_check(env: Mapping[str, str]) -> str | None:
     return config
 
 
+def public_startup_check(env: Mapping[str, str], *, runtimes: frozenset[str]) -> None:
+    """m10b §0.2: in public mode (`SWF_PUBLIC=1`) strangers' code must run on gVisor and the
+    Portkey guardrails must be on. Raises SettingsError; no override."""
+    from swf.agent.model import portkey_config_from_env
+    from swf.settings import Deployment, SettingsError
+
+    if not Deployment.from_env(env).public:
+        return
+    runtime = (env.get("SWF_SANDBOX_RUNTIME") or "").strip()
+    if runtime != "runsc":
+        raise SettingsError("SWF_PUBLIC=1 needs SWF_SANDBOX_RUNTIME=runsc (gVisor)")
+    if "runsc" not in runtimes:
+        raise SettingsError("SWF_PUBLIC=1: Docker does not list the runsc runtime; install gVisor")
+    if portkey_config_from_env(env) is None:
+        raise SettingsError("SWF_PUBLIC=1 needs SWF_PORTKEY_CONFIG set to a pc-... slug, not off")
+
+
 def build_runner_deps(
     settings: Settings,
     db: Database,
@@ -966,6 +983,9 @@ def main() -> None:
     from swf.settings import Settings
 
     portkey_startup_check(os.environ)  # m10a §1.8: before anything else
+    from swf.sandbox import docker_runtimes
+
+    public_startup_check(os.environ, runtimes=docker_runtimes())  # m10b §0.2
     sandbox_user()  # m9 §0.7: fail fast on a root host, before any Docker work
     agent = agent_overrides_from_env()
     settings = Settings.from_env()

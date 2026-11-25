@@ -45,10 +45,12 @@ from datetime import time as dt_time
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from swf import store
+from swf.api.streams import StreamSlots
 from swf.auth import AuthError, JwtVerifier, Principal
 from swf.db import Conn, Database
 from swf.github import GitHubAuthError, GitHubClient, GitHubError
@@ -86,6 +88,7 @@ class AppDeps:
     sse_keepalive_seconds: float = 15.0
     abuse: AbuseLimits = field(default_factory=AbuseLimits)
     monotonic: Callable[[], float] = time.monotonic
+    cors_origins: tuple[str, ...] = ()  # m10b §0.3; empty: no CORS headers (localhost proxy)
 
     def today(self) -> date:
         return self.clock().astimezone(UTC).date()
@@ -212,6 +215,20 @@ def create_app(
     create_limiter = RateLimiter(
         per_minute=abuse.create_per_minute, burst=abuse.create_burst, clock=deps.monotonic
     )
+    preflight_limiter = RateLimiter(
+        per_minute=abuse.preflight_per_minute, burst=abuse.preflight_burst, clock=deps.monotonic
+    )
+    stream_slots = StreamSlots(per_user=abuse.sse_streams_per_user, total=abuse.sse_streams_total)
+    if deps.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(deps.cors_origins),
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "Last-Event-ID"],
+            expose_headers=["Retry-After"],
+            allow_credentials=False,
+            max_age=600,
+        )
 
     def _limit(limiter: RateLimiter, user_id: uuid.UUID) -> None:
         wait = limiter.hit(user_id)
@@ -376,6 +393,7 @@ def create_app(
     @app.post("/v1/preflight")
     def preflight(user: User, body: RepoRef) -> PreflightResult:
         """Dry run: the estimate a create would get; no task, no audit row (m10a §1.2)."""
+        _limit(preflight_limiter, user.id)  # m10b §0.5: each call costs GitHub/registry requests
         return _checked_preflight(user, body)
 
     @app.post("/v1/tasks", status_code=status.HTTP_201_CREATED)
@@ -449,8 +467,19 @@ def create_app(
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid_last_event_id") from None
         claims = user.principal.claims
         user_id = user.id
+        slot = stream_slots.acquire(user_id)
+        if slot is None:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS, "too_many_streams", headers={"Retry-After": "5"}
+            )
 
         def stream() -> Iterator[str]:
+            try:
+                yield from _stream()
+            finally:
+                slot.release()
+
+        def _stream() -> Iterator[str]:
             sent = cursor
             last_output = time.monotonic()
             while True:
@@ -479,8 +508,10 @@ def create_app(
                     last_output = time.monotonic()
                 time.sleep(deps.sse_poll_seconds)
 
+        body = stream()
+        slot.release_with(body)  # a response dropped before it ever ran frees its slot too
         return StreamingResponse(
-            stream(),
+            body,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )

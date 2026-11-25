@@ -2,7 +2,7 @@
 
 - **Purpose:** One-time setup you do in the GitHub, Supabase and Portkey dashboards, then the commands that start SWF on your PC with the web UI.
 - **Last updated:** 2026-11-25
-- **Sources:** m10a-contract §0 (decisions 2, 3, 14), §1.8, §5.
+- **Sources:** m10a-contract §0 (decisions 2, 3, 14), §1.8, §5; m10b-contract §0 (public deploy, §6 here).
 
 No secret goes into git. Server secrets live in the repo-root `.env`. The browser gets only `web/.env.local`, which holds public values.
 
@@ -78,3 +78,35 @@ Open `http://localhost:5173` and sign in with GitHub. The Vite dev server proxie
 | Web typecheck and build | `cd web; npm run typecheck; npm run build` |
 
 The e2e stack writes its logs to `<pytest tmp>/…/logs/{api,worker,vite}.log`. Set `SWF_E2E_HEADED=1` to watch the browser.
+
+## 6. Public deploy (m10b)
+
+Vercel serves the web app; the API and the worker stay on this PC behind a Cloudflare quick tunnel. Everything here is $0. Run `deploycheck` (step 5) before you open the tunnel.
+
+1. **gVisor where the worker runs (required in public mode).** Docker Desktop on Windows has no `runsc`. Run the worker in a WSL2 Ubuntu distro with Docker Engine (not Docker Desktop) and gVisor:
+   - In Ubuntu: install Docker Engine (docs.docker.com/engine/install/ubuntu), then gVisor exactly as `.github/workflows/m8-gvisor.yml` does: add the gVisor apt repo, `sudo apt-get install -y runsc`, `sudo runsc install`, `sudo systemctl restart docker`.
+   - Check: `docker info --format '{{json .Runtimes}}'` lists `runsc`.
+   - Clone the repo inside Ubuntu, copy `.env`, and start the worker there (step 6). The API can stay on Windows.
+2. **`.env` additions** (both the API's and the worker's):
+   ```
+   SWF_PUBLIC=1
+   SWF_CORS_ORIGINS=https://<project>.vercel.app
+   SWF_SANDBOX_RUNTIME=runsc
+   ```
+   `SWF_PORTKEY_CONFIG` must be the `pc-…` slug (not `off`). The worker refuses to start in public mode without gVisor or the guardrails.
+3. **Tunnel.** Install `cloudflared` (`winget install --id Cloudflare.cloudflared`), then:
+   ```powershell
+   cloudflared tunnel --url http://127.0.0.1:8000
+   ```
+   It prints `https://<random>.trycloudflare.com`. That URL changes on every start: update `VITE_API_BASE` on Vercel and redeploy each time. A stable URL needs a named tunnel on a domain you own (not $0).
+4. **Vercel.** Import the Fixable repo; Root Directory `web/` (framework, build and output come from `web/vercel.json`). Environment variables (Production): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_API_BASE` = the tunnel URL. Never set `VITE_AUTH_MODE`.
+5. **Supabase and GitHub.** Supabase → Authentication → URL Configuration: Site URL `https://<project>.vercel.app`; Redirect URLs add `https://<project>.vercel.app/**` (keep the localhost entry for development). GitHub OAuth App: Homepage URL may stay as is; the callback stays the Supabase one.
+6. **Check, then run.**
+   ```powershell
+   uv run --env-file .env python -m swf.deploycheck
+   ```
+   Every line must say PASS. Then start the API (Windows) and the worker (WSL Ubuntu) as in §4, then the tunnel.
+7. **Keep-alive.** In the GitHub repo that hosts `.github/workflows/supabase-keepalive.yml`: Settings → Secrets and variables → Actions → add `SUPABASE_URL` and `SUPABASE_ANON_KEY` (public values). The workflow reads one row every three days so the Free project is not paused.
+
+Limits in front of strangers (defaults; `SWF_*` overrides in `settings.py`): 5 tasks/day, $3/day, 1 running task per user, 120 API calls/min, 10 pre-flights/min, 4 open event streams per user and 40 in all. A provider HTTP 429 waits up to about 4 minutes before it counts as a failed model call.
+

@@ -80,20 +80,27 @@ def parse_runtimes(info_json: str) -> frozenset[str]:
     return frozenset(json.loads(info_json))
 
 
+def docker_runtimes(*, docker: str = "docker") -> frozenset[str]:
+    """The runtimes the Docker daemon lists; empty when Docker cannot be asked."""
+    try:
+        info = subprocess.run(
+            [docker, "info", "--format", "{{json .Runtimes}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return frozenset()
+    try:
+        return parse_runtimes(info.stdout.strip()) if info.returncode == 0 else frozenset()
+    except ValueError:
+        return frozenset()
+
+
 def check_runtime(runtime: str, *, docker: str = "docker") -> None:
     """Raise SandboxRuntimeError unless the Docker daemon lists `runtime`."""
-    info = subprocess.run(
-        [docker, "info", "--format", "{{json .Runtimes}}"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    try:
-        runtimes = parse_runtimes(info.stdout.strip()) if info.returncode == 0 else frozenset()
-    except ValueError:
-        runtimes = frozenset()
-    if runtime not in runtimes:
+    if runtime not in docker_runtimes(docker=docker):
         raise SandboxRuntimeError(f"docker runtime {runtime!r} not available")
 
 

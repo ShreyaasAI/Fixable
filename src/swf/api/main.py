@@ -18,7 +18,7 @@ from swf.db import Database
 from swf.github import GitHubClient
 from swf.images import RegistryClient
 from swf.preflight import PreflightService
-from swf.settings import AbuseLimits, Settings
+from swf.settings import AbuseLimits, Deployment, Settings
 from swf.tokens import TokenCipher
 
 
@@ -45,6 +45,7 @@ def build_app_deps(
             github=gh, registry=RegistryClient() if registry is None else registry
         ),
         abuse=AbuseLimits.from_env(),
+        cors_origins=Deployment.from_env().cors_origins,
     )
 
 

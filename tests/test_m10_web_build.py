@@ -64,3 +64,17 @@ def test_dev_build_has_the_dev_sign_in(installed: None, tmp_path: Path) -> None:
         env=env,
     )
     assert marker_in(out)
+
+
+def test_a_vercel_build_points_at_the_api_and_never_has_the_dev_form(
+    installed: None, tmp_path: Path
+) -> None:
+    """m10b §0.8: what Vercel builds. Even a stray VITE_AUTH_MODE=dev cannot enable the dev form
+    in a production build (m10a A7)."""
+    api = "https://swf-api-test.trycloudflare.com"
+    env = {**os.environ, "VITE_API_BASE": api, "VITE_AUTH_MODE": "dev"}
+    out = tmp_path / "vercel"
+    npm("exec", "--", "vite", "build", "--outDir", str(out), "--emptyOutDir", env=env)
+    bundle = "".join(p.read_text(encoding="utf-8") for p in out.rglob("*.js"))
+    assert api in bundle
+    assert not marker_in(out)

@@ -137,11 +137,35 @@ class WebAgentConfig(AgentConfig):
     poll_seconds: float = 2.0
     max_retries: int = 3
     retry_backoff_seconds: tuple[float, ...] = (5.0, 15.0)
+    # m10b §0.4: provider HTTP 429 waits; they use none of the `max_retries` attempts.
+    rate_limit_backoff_seconds: tuple[float, ...] = (10.0, 20.0, 40.0, 60.0, 60.0, 60.0)
     output_limit: int = 16000
     test_command: str | None = None
     allow: list[str] = []
     outputs_dir: Path | None = None
     failing_test: str | None = None
+
+
+RETRY_AFTER_CAP_SECONDS = 120.0
+
+
+def is_rate_limit(exc: BaseException) -> bool:
+    """A provider HTTP 429 (litellm `RateLimitError`, or any error with `status_code == 429`)."""
+    return getattr(exc, "status_code", None) == 429 or type(exc).__name__ == "RateLimitError"
+
+
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """The provider's `Retry-After` in seconds (capped at 120), if the error carries one."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = float(str(headers.get("retry-after", "")).strip())
+    except ValueError:
+        return None
+    if value != value or value < 0:  # NaN or negative
+        return None
+    return min(value, RETRY_AFTER_CAP_SECONDS)
 
 
 def _truncate(value: str, limit: int) -> str:
@@ -370,6 +394,7 @@ class WebAgent(DefaultAgent):
         `retry` -> another round, anything else -> `RetriesExhausted`."""
         cfg = self.cfg
         attempt = 0
+        rate_limited = 0
         while True:
             attempt += 1
             try:
@@ -380,6 +405,24 @@ class WebAgent(DefaultAgent):
                 raise  # a refused call is not a retryable failure
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
+                budget = cfg.rate_limit_backoff_seconds
+                if is_rate_limit(exc) and rate_limited < len(budget):
+                    wait = max(budget[rate_limited], retry_after_seconds(exc) or 0.0)
+                    rate_limited += 1
+                    attempt -= 1  # a provider 429 uses no ordinary attempt
+                    self.channel.emit(
+                        "retry",
+                        {
+                            "step": step,
+                            "attempt": rate_limited,
+                            "error": error,
+                            "rate_limited": True,
+                            "wait_seconds": wait,
+                        },
+                    )
+                    self.sleep(wait)
+                    self._raise_if_stopped()
+                    continue
                 self.channel.emit("retry", {"step": step, "attempt": attempt, "error": error})
                 self._exhausted_or_wait(step, attempt, error)
                 if attempt >= cfg.max_retries:
