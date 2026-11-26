@@ -1,8 +1,9 @@
 # M10a manual checklist (DoD)
 
 - **Purpose:** The plan §18 M10 DoD: every spec §3 action works in the browser. Run it against the Supabase Free project with real GitHub sign-in and the real worker (Portkey saved guardrail config on).
-- **Last updated:** 2026-11-24
-- **Status:** Not run yet.
+- **Last updated:** 2026-11-26
+- **Status:** Not run yet. All automated M10a/M10b tests pass (`main` `519582e`); this checklist and the smoke PR are the last M10 DoD items, run by the user.
+- **Before you start:** stop any API or worker from an older checkout (an M9 API gives 404 on pre-flight and admin), then start both from `main` with `--env-file` (runbook §4).
 - **Setup:** `docs/software-factory/m10-runbook.md` §1–§4.
 - **Screenshots:** save them under `docs/software-factory/m10a-shots/` as `<nn>-<name>-<width>-<mode>.png`. Take them at 375 px and 1440 px, in dark and light mode (browser devtools → Rendering → `prefers-color-scheme`).
 
