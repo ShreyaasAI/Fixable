@@ -318,10 +318,13 @@ def sign_in(page: Page, user: EvalUser) -> None:
 
 
 def choose_repo(page: Page, name: str) -> None:
-    select = page.get_by_test_id("repo-select")
-    option = select.locator("option", has_text=name).first
-    expect(option).to_be_attached(timeout=SHORT)
-    select.select_option(label=option.inner_text().strip())
+    """m11 A1: the repo picker is a combobox; open it and click the option by its role."""
+    trigger = page.get_by_test_id("repo-select")
+    trigger.click()
+    option = page.get_by_role("option", name=name, exact=True)
+    expect(option).to_be_enabled(timeout=SHORT)
+    option.click()
+    expect(trigger).to_contain_text(name)
 
 
 def fill_new_task(page: Page, description: str, *, repo: str = fakes.REPO,

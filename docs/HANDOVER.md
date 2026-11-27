@@ -1,7 +1,7 @@
 # Handover
 
 - **Purpose:** Bring a new session from zero to the next action. This file is the project's state, not its content; details live in the artifacts it points to.
-- **Last updated:** 2026-11-26
+- **Last updated:** 2026-11-27
 - **Status:** Current
 
 ## Where the project is
@@ -22,6 +22,7 @@
 | M8 abuse controls + gVisor | **Approved, merged to `main`** (`4f982a4`, 2026-11-22). Contract `docs/software-factory/m8-contract.md` (§13 A1–A5 override §0–§6; §5 results). gVisor DoD ran on GitHub Actions, not Oracle (needs a card) |
 | M9 concurrency + evaluation | **Done, approved (user, 2026-11-23), merged to `main` (`955818b`), pushed to `ShreyaasAI/Fixable`**. Contract `docs/software-factory/m9-contract.md` (§5 results, §13 A1–A2). Live run `run-20261123b`: single 10/10, concurrent 9/10 (drop 10 points, met), wall ratio 1.26 vs <= 1.25 (**not met**, miss accepted by the user 2026-11-23: "Accept, close M9"). Results: `docs/software-factory/m9-results.md` |
 | M10 | **M10-0** refactors approved (user, 2026-11-24). **M10a** localhost UI (contract `m10a-contract.md`, approved "Approve, Q1 yes") and **M10b** deploy readiness (contract `m10b-contract.md`, planner decisions under the user's delegation 2026-11-25) are built, tested and merged to `main`. Automated: non-live suite, e2e (local and CI on `swf-ci`), gVisor CI. **Not done (user):** the manual UI checklist + live smoke PR (`m10a-checklist.md`), and the public deploy steps in `m10-runbook.md` §6 |
+| M11 UI redesign ("workbench") | **Built on `feature/m11` (worktree `.claude/worktrees/m11`), not merged, not pushed.** Contract `docs/software-factory/m11-contract.md` (overrides m10a §3 and decision 12; amendments A1–A5). Figma: https://www.figma.com/design/hyhgKmjD9RNYZMYFy0DAIE. Stack: Tailwind v4, restyled shadcn (Radix + cmdk), `motion`, react-three-fiber hero on sign-in only, @fontsource fonts; display face Sansita ExtraBold, a free Britannic Bold look-alike (A5). Screenshots `docs/software-factory/m11-screenshots/`. Results: see "M11 evidence" below |
 
 Repo state (2026-11-26):
 - `main` = `519582e` ("Merge M10: web UI (M10a) and deploy readiness (M10b)"), contains M0–M10, pushed to `origin` = `ShreyaasAI/Fixable` (**public**; every push follows a history secret scan). Push only after an approved increment (or the user's explicit delegation, as on 2026-11-25).
@@ -30,10 +31,20 @@ Repo state (2026-11-26):
 - The main checkout's `.env` is untracked and holds the secrets (Supabase, Portkey, `SWF_TOKEN_ENCRYPTION_KEY`). Never `git add -A` on `main`; never commit `.env` or `web/.env.local`.
 - Dev machine: Windows 11, x86_64, Docker Desktop (runc only, no runsc), Python 3.14 via uv, Node + npm for `web/`.
 
+## M11 evidence (2026-11-27)
+
+Run from `.claude/worktrees/m11`:
+- `cd web; npm run typecheck` passes. `npm run build` passes: the entry chunk is 580 kB (188 kB gzip); three.js and react-three-fiber are in a lazy `Scene` chunk (933 kB, 250 kB gzip) that loads on the sign-in page only.
+- `pytest -m e2e tests/test_m11_web_bundle.py tests/test_m10_web_build.py`: 8 passed.
+- `SWF_SCREENSHOT_DIR=docs/software-factory/m11-screenshots pytest -m e2e tests/e2e`: **22 passed** (the 12 m10a tests plus 10 M11 tests) in about 3 min, after the Sansita swap (A5). Two flakes under full-suite load were fixed: the hero now redraws at 30 fps (1.5× DPR cap) instead of every frame, and the keyboard test waits for the repo list to close before it moves on. Screenshots: 5 screens × 375/1440 px × dark/light = 20 PNGs, with no sideways scroll on any of them.
+- `uv run ruff check` / `ruff format --check` on the changed tests: clean. `uv run mypy`: no issues.
+- Not run: the non-live suite (no Python source changed), and CI on `swf-ci`.
+
 ## Waiting on the user
 
 The user said (2026-11-25): "Do everything and don't ask me anything. Complete the next part of M10 and complete the whole project. Just leave the UI. I will continue the UI in next session." M10b was built, reviewed and merged under that delegation. Left to the user:
 
+0. **M11 redesign review.** Review the screenshots in `docs/software-factory/m11-screenshots/` and the Figma file, then decide whether to commit and merge `feature/m11` (nothing is committed yet; all changes sit uncommitted in `.claude/worktrees/m11`). After merging, Vercel needs no new env vars.
 1. **UI (next session).** Manual checklist `m10a-checklist.md` rows 1–17 with screenshots (375 px and 1440 px, dark and light), then one live smoke PR on `swf-pr-sandbox`; record its URL in the checklist, close it, delete its branch. That ticks the M10 DoD box in implementation-plan §18.
 2. **Public deploy (when wanted).** `m10-runbook.md` §6 in order: gVisor in WSL2 Ubuntu (Docker Engine + runsc) for the worker → `.env` `SWF_PUBLIC=1`, `SWF_CORS_ORIGINS=https://<project>.vercel.app`, `SWF_SANDBOX_RUNTIME=runsc` → `cloudflared tunnel --url http://127.0.0.1:8000` → Vercel (Root Directory `web/`; env `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_API_BASE` = tunnel URL; never `VITE_AUTH_MODE`) → Supabase Site URL + redirect `https://<project>.vercel.app/**` → keep-alive secrets `SUPABASE_URL`, `SUPABASE_ANON_KEY` on the repo that runs the workflow. `uv run --env-file .env python -m swf.deploycheck` must print all PASS first; on this PC today it fails `public mode`, `cors origins` and `gvisor` (expected).
 

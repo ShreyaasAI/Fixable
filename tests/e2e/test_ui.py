@@ -65,16 +65,17 @@ def test_an_api_without_quota_fields_does_not_blank_the_page(page: Page, user: E
     page.route("**/v1/me", strip_quota)
     sign_in(page, user)
     expect(page.get_by_test_id("user-login")).to_contain_text(fakes.GITHUB_LOGIN)
-    expect(page.get_by_role("heading", name="Tasks")).to_be_visible()
+    expect(page.get_by_role("heading", name="Tasks", exact=True)).to_be_visible()
     expect(page.get_by_test_id("quota-tasks")).to_have_count(0)
 
 
 def test_repo_picker_prefills_default_branch(page: Page, user: EvalUser) -> None:
     sign_in(page, user)
     page.get_by_test_id("nav-new").click()
-    select = page.get_by_test_id("repo-select")
-    expect(select.locator("option", has_text=fakes.REPO).first).to_be_enabled(timeout=SHORT)
-    expect(select.locator("option", has_text=fakes.READONLY_REPO).first).to_be_disabled()
+    page.get_by_test_id("repo-select").click()
+    expect(page.get_by_role("option", name=fakes.REPO, exact=True)).to_be_enabled(timeout=SHORT)
+    expect(page.get_by_role("option", name=fakes.READONLY_REPO)).to_be_disabled()
+    page.keyboard.press("Escape")
     choose_repo(page, fakes.REPO)
     expect(page.get_by_test_id("branch-input")).to_have_value("main")
 
@@ -310,26 +311,37 @@ def _type_into(page: Page, test_id: str, text: str) -> None:
 
 def _tab_to(page: Page, test_id: str, *, limit: int = 8) -> None:
     """Press Tab until the element with `test_id` has focus (the tab order reaches it)."""
+    seen: list[str] = []
     for _ in range(limit):
         page.keyboard.press("Tab")
-        if page.evaluate("() => document.activeElement?.dataset?.testid ?? ''") == test_id:
+        here = str(
+            page.evaluate(
+                "() => { const e = document.activeElement;"
+                " return e?.dataset?.testid || `${e?.tagName}#${e?.id}`; }"
+            )
+        )
+        if here == test_id:
             return
-    raise AssertionError(f"Tab never reached {test_id}")
+        seen.append(here)
+    raise AssertionError(f"Tab never reached {test_id}; focus went {seen}")
 
 
 def test_keyboard_only_create(page: Page, e2e_stack: Stack, user: EvalUser) -> None:
     sign_in(page, user)
     page.get_by_test_id("nav-new").focus()
     page.keyboard.press("Enter")
-    # the repo: ArrowDown through the select until the pushable repo is selected
-    select = page.get_by_test_id("repo-select")
-    expect(select.locator("option", has_text=fakes.REPO).first).to_be_enabled(timeout=SHORT)
-    select.focus()
-    for _ in range(6):
-        if fakes.REPO in (select.evaluate("el => el.selectedOptions[0]?.textContent ?? ''") or ""):
-            break
-        page.keyboard.press("ArrowDown")
-    expect(select.locator("option:checked")).to_contain_text(fakes.REPO)
+    # the repo (m11 A1, combobox): Enter opens it, typing filters, Enter picks the match
+    trigger = page.get_by_test_id("repo-select")
+    expect(trigger).to_be_enabled(timeout=SHORT)
+    trigger.focus()
+    assert _focus_ring_visible(page), "no visible focus ring on the repo picker"
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("option", name=fakes.REPO, exact=True)).to_be_visible(timeout=SHORT)
+    page.keyboard.type(fakes.REPO)
+    page.keyboard.press("Enter")
+    expect(trigger).to_contain_text(fakes.REPO)
+    expect(page.get_by_role("listbox")).to_have_count(0)  # Enter picks and closes the list
+    expect(trigger).to_be_focused()  # focus goes back to the trigger
     expect(page.get_by_test_id("branch-input")).to_have_value("main")
     _type_into(page, "description-input", f"{fakes.TAG_FIX} Page 2 repeats the last item.")
     _tab_to(page, "preflight-button")

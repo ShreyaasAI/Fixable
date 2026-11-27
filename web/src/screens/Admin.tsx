@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api, type AdminUser, type Me, type SystemStatus } from "../api";
-import { ConfirmDialog, timeAgo } from "../components";
+import { timeAgo } from "../lib/utils";
 import { messageFor } from "../messages";
+import { Alert, Button, ConfirmDialog, PageHead, Panel, Stamp } from "../ui";
 
 type Action =
   | { kind: "pause" }
@@ -32,11 +33,9 @@ export function Admin({ me }: { me: Me | null }) {
 
   if (forbidden) {
     return (
-      <div className="stack">
-        <h1>Admin</h1>
-        <p className="alert" role="alert" data-testid="admin-error">
-          {error ?? "Admins only."}
-        </p>
+      <div className="flex flex-col gap-8">
+        <PageHead title="Admin" />
+        <Alert testId="admin-error">{error ?? "Admins only."}</Alert>
       </div>
     );
   }
@@ -58,105 +57,128 @@ export function Admin({ me }: { me: Me | null }) {
   };
 
   return (
-    <div className="stack">
-      <h1>Admin</h1>
-      {error && (
-        <p className="alert" role="alert" data-testid="admin-error">
-          {error}
-        </p>
-      )}
+    <div className="flex flex-col gap-8 md:gap-9">
+      <PageHead
+        title="Admin"
+        lede="Stop everything, or one person, without touching the database."
+      />
+      {error && <Alert testId="admin-error">{error}</Alert>}
       {state && (
         <>
-          <section
-            className="card stack"
+          <Panel
             data-testid="admin-state"
             data-paused={String(state.tasks_paused)}
             aria-labelledby="admin-state-title"
+            className="flex flex-col gap-4 p-5 md:flex-row md:items-center md:gap-6 md:px-6"
           >
-            <h2 id="admin-state-title">
-              Service: {state.tasks_paused ? "paused" : "running"}
-            </h2>
-            <p className="muted">
-              {state.queued} queued, {state.active} running
-              {state.updated_at && ` · changed ${timeAgo(state.updated_at)}`}
-            </p>
-            <div className="row">
-              <button
-                type="button"
-                className="btn btn-danger"
+            <Stamp
+              label={state.tasks_paused ? "Paused" : "Taking tasks"}
+              tone={state.tasks_paused ? "danger" : "ok"}
+              animate
+              className="w-fit"
+            />
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <h2 id="admin-state-title" className="text-[15px]">
+                {state.tasks_paused
+                  ? "New tasks are refused until you resume."
+                  : "Workers are claiming new tasks."}
+              </h2>
+              <p className="font-mono text-xs text-muted">
+                {state.queued} queued · {state.active} running
+                {state.updated_at && ` · changed ${timeAgo(state.updated_at)}`}
+                {state.updated_by && ` by ${state.updated_by}`}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:flex">
+              <Button
+                kind="danger"
                 data-testid="pause-all"
                 disabled={busy || state.tasks_paused}
                 onClick={() => setAction({ kind: "pause" })}
               >
                 Pause all
-              </button>
-              <button
-                type="button"
-                className="btn"
+              </Button>
+              <Button
+                kind="secondary"
                 data-testid="resume-all"
                 disabled={busy || !state.tasks_paused}
                 onClick={() => void run({ kind: "resume" })}
               >
                 Resume all
-              </button>
+              </Button>
             </div>
-          </section>
-          <section className="card stack" aria-labelledby="users-title">
-            <h2 id="users-title">Users</h2>
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th scope="col">GitHub login</th>
-                    <th scope="col">State</th>
-                    <th scope="col">Open tasks</th>
-                    <th scope="col">
+          </Panel>
+          <section aria-labelledby="users-title" className="flex flex-col gap-3">
+            <h2 id="users-title" className="eyebrow">
+              People · {state.users.length}
+            </h2>
+            <Panel className="overflow-hidden">
+              <table className="w-full border-collapse text-left">
+                <thead className="hidden bg-raised md:table-header-group">
+                  <tr className="border-b border-line">
+                    {["User", "State", "Open tasks"].map((h) => (
+                      <th key={h} scope="col" className="eyebrow px-5 py-3 font-medium">
+                        {h}
+                      </th>
+                    ))}
+                    <th scope="col" className="px-5 py-3">
                       <span className="sr-only">Actions</span>
                     </th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-line">
                   {state.users.map((u) => {
                     const self = u.user_id === me?.user_id;
+                    const name = u.github_login ?? u.user_id.slice(0, 8);
                     return (
                       <tr
                         key={u.user_id}
                         data-testid="admin-user-row"
                         data-user-id={u.user_id}
                         data-disabled={String(u.disabled)}
+                        className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 px-4 py-3.5 md:table-row md:px-0 md:py-0"
                       >
-                        <td className="mono">
-                          {u.github_login ?? u.user_id.slice(0, 8)}
-                          {u.is_admin && <span className="badge badge-info"> admin</span>}
+                        <td className="min-w-0 md:px-5 md:py-3">
+                          <span className="font-mono text-sm">{name}</span>
+                          {self && <span className="font-mono text-xs text-muted"> (you)</span>}
+                          {u.is_admin && (
+                            <span className="ml-2 font-mono text-xs uppercase tracking-[0.06em] text-info">
+                              admin
+                            </span>
+                          )}
                         </td>
-                        <td>
-                          <span className={`badge ${u.disabled ? "badge-bad" : "badge-ok"}`}>
-                            {u.disabled ? "disabled" : "active"}
-                          </span>
+                        <td className="col-start-1 row-start-2 md:px-5 md:py-3">
+                          <Stamp
+                            label={u.disabled ? "disabled" : "active"}
+                            tone={u.disabled ? "danger" : "ok"}
+                          />
                         </td>
-                        <td>{u.open_tasks}</td>
-                        <td>
+                        <td className="col-start-1 row-start-3 font-mono text-[13px] text-muted md:px-5 md:py-3 md:text-sm md:text-fg">
+                          <span className="md:hidden">open tasks: </span>
+                          {u.open_tasks}
+                        </td>
+                        <td className="col-start-2 row-span-3 row-start-1 md:px-5 md:py-2.5 md:text-right">
                           {u.disabled ? (
-                            <button
-                              type="button"
-                              className="btn"
+                            <Button
+                              kind="secondary"
+                              size="sm"
                               data-testid="resume-user"
                               disabled={busy || self}
                               onClick={() => void run({ kind: "resume-user", user: u })}
                             >
                               Resume
-                            </button>
+                            </Button>
                           ) : (
-                            <button
-                              type="button"
-                              className="btn btn-danger-outline"
+                            <Button
+                              kind="danger-outline"
+                              size="sm"
                               data-testid="kill-user"
                               disabled={busy || self}
                               aria-label={`Kill ${u.github_login ?? u.user_id}`}
                               onClick={() => setAction({ kind: "kill", user: u })}
                             >
                               Kill
-                            </button>
+                            </Button>
                           )}
                         </td>
                       </tr>
@@ -164,7 +186,7 @@ export function Admin({ me }: { me: Me | null }) {
                   })}
                 </tbody>
               </table>
-            </div>
+            </Panel>
           </section>
         </>
       )}
